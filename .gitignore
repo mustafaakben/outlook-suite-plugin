@@ -1,0 +1,9 @@
+# Local assistant/workspace artifacts
+.claude/
+.serena/
+
+# Common OS/editor noise
+Thumbs.db
+.DS_Store
+*.tmp
+*.log

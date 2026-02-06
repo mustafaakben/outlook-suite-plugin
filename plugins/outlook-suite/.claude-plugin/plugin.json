@@ -1,0 +1,9 @@
+{
+  "name": "outlook-suite",
+  "description": "Modular Outlook automation skills for Claude Code: mail, calendar, contacts, tasks, and notes.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Mustafa Akben",
+    "email": "mustafaakben@gmail.com"
+  }
+}
