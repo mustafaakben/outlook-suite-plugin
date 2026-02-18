@@ -14,8 +14,15 @@ param(
     [string]$Importance = "",
     [string]$Category = "",
     [string]$Folder = "Inbox",
-    [int]$Limit = 50
+    [int]$Limit = 50,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Find Script — EntryID retrieval with search/filter conditions
 # Usage: .\outlook-find.ps1 -Days 1 -UnreadOnly
@@ -225,6 +232,7 @@ try {
         Write-Host "  Status: $status" -ForegroundColor $statusColor
 
         if ($snippet) {
+            if ($StripLinks) { $snippet = Strip-Links $snippet }
             Write-Host "  Body: $snippet" -ForegroundColor Gray
         }
 

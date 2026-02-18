@@ -17,8 +17,15 @@ param(
     [switch]$HTML,
     [switch]$ReadReceipt,
     [switch]$DeliveryReceipt,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Schedule Send Script
 # Usage: .\outlook-schedule-send.ps1 -To "email@example.com" -Subject "Hello" -Body "Message" -SendAt "2026-02-10 09:00" -Confirm
@@ -62,6 +69,7 @@ if ($SendAt -le (Get-Date)) {
         }
     }
 
+    if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
     Write-Host "Body: $bodyPreview" -ForegroundColor Gray
     Write-Host "================================" -ForegroundColor Yellow
 

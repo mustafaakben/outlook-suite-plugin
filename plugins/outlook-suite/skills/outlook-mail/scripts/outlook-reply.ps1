@@ -7,8 +7,15 @@ param(
 
     [int]$Days = 7,
     [switch]$ReplyAll,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Reply Script
 # Usage: .\outlook-reply.ps1 -EntryID "00000000..." -Body "Thank you for your email." (preferred)
@@ -93,6 +100,7 @@ try {
         if ($bodyPreview.Length -gt 200) {
             $bodyPreview = $bodyPreview.Substring(0, 200) + "..."
         }
+        if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
 
         if ($Confirm) {
             # Show confirmation summary before sending

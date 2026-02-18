@@ -1,7 +1,14 @@
 param(
     [switch]$Enabled,
-    [switch]$Detailed
+    [switch]$Detailed,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Rules List Script
 # List email rules
@@ -114,7 +121,8 @@ try {
             if ($conditionsList.Count -gt 0) {
                 Write-Host "      Conditions:" -ForegroundColor Cyan
                 foreach ($cond in $conditionsList) {
-                    Write-Host "        - $cond" -ForegroundColor Gray
+                    $condDisplay = if ($StripLinks) { Strip-Links $cond } else { $cond }
+                    Write-Host "        - $condDisplay" -ForegroundColor Gray
                 }
             }
 
@@ -196,7 +204,8 @@ try {
             if ($actionsList.Count -gt 0) {
                 Write-Host "      Actions:" -ForegroundColor Cyan
                 foreach ($act in $actionsList) {
-                    Write-Host "        - $act" -ForegroundColor Gray
+                    $actDisplay = if ($StripLinks) { Strip-Links $act } else { $act }
+                    Write-Host "        - $actDisplay" -ForegroundColor Gray
                 }
             }
 

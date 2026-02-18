@@ -12,8 +12,15 @@ param(
     [string]$CC = "",
     [string]$BCC = "",
     [switch]$HTML,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Voting Buttons Script
 # Usage: .\outlook-voting.ps1 -To "team@example.com" -Subject "Lunch poll" -Body "Where should we eat?" -Options "Pizza;Tacos;Sushi" -Confirm
@@ -50,6 +57,7 @@ try {
         $optionNum++
         Write-Host "  [$optionNum] $opt"
     }
+    if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
     Write-Host "`nBody:" -ForegroundColor Gray
     Write-Host $bodyPreview
     Write-Host "==============================" -ForegroundColor Yellow

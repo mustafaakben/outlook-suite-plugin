@@ -11,8 +11,15 @@ param(
     [string]$CC = "",
     [string]$BCC = "",
     [string[]]$Attachment = @(),
-    [switch]$HTML
+    [switch]$HTML,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Draft Creator
 # Usage: .\outlook-draft.ps1 -To "email@example.com" -Subject "Hello" -Body "Message here"
@@ -64,11 +71,9 @@ try {
     Write-Host "Subject: $Subject"
     $format = if ($HTML) { "HTML" } else { "Plain Text" }
     Write-Host "Format: $format"
-    if ($Body.Length -gt 100) {
-        Write-Host "Body preview: $($Body.Substring(0, 100))..."
-    } else {
-        Write-Host "Body preview: $Body"
-    }
+    $bodyPreview = if ($Body.Length -gt 100) { $Body.Substring(0, 100) + "..." } else { $Body }
+    if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
+    Write-Host "Body preview: $bodyPreview"
     if ($attachedFiles.Count -gt 0) {
         Write-Host "Attachments: $($attachedFiles -join ', ')" -ForegroundColor Gray
     }

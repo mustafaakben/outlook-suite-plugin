@@ -17,8 +17,15 @@ param(
     [switch]$StopProcessing,
     [switch]$DesktopAlert,
     [switch]$Disabled,
-    [switch]$Force
+    [switch]$Force,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Rules Create Script
 # Create an email rule with conditions and actions
@@ -227,12 +234,14 @@ try {
 
                     Write-Host "`nConditions:" -ForegroundColor Cyan
                     foreach ($cond in $conditionsList) {
-                        Write-Host "  - $cond" -ForegroundColor Gray
+                        $condDisplay = if ($StripLinks) { Strip-Links $cond } else { $cond }
+                        Write-Host "  - $condDisplay" -ForegroundColor Gray
                     }
 
                     Write-Host "`nActions:" -ForegroundColor Cyan
                     foreach ($act in $actionsList) {
-                        Write-Host "  - $act" -ForegroundColor Gray
+                        $actDisplay = if ($StripLinks) { Strip-Links $act } else { $act }
+                        Write-Host "  - $actDisplay" -ForegroundColor Gray
                     }
 
                     # Save the rules with error handling

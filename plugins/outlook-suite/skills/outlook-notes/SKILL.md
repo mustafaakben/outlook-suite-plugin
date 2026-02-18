@@ -12,6 +12,12 @@ Manage Microsoft Outlook sticky notes using PowerShell COM objects.
 - Microsoft Outlook installed (scripts auto-start Outlook if it is not already running)
 - PowerShell 5.1+ (included in Windows 10/11)
 
+## Link Stripping
+
+All notes scripts that display body content support a `-StripLinks` parameter (default: `$true`). When active, URLs in output are replaced with `[URL]` to reduce context window bloat from long tracking URLs, Safe Links wrappers, and marketing links.
+
+To see raw URLs, pass `-StripLinks $false`.
+
 ## List Notes
 
 ### outlook-notes-list.ps1
@@ -25,6 +31,7 @@ Browse notes with optional color filtering and search. Returns EntryIDs for use 
 | `-Limit` | int | 20 | Maximum notes to display |
 | `-Color` | string | All | Filter by color: All, Blue, Green, Pink, Yellow, White |
 | `-Search` | string | — | Search note content (case-insensitive) |
+| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in note preview |
 
 ```powershell
 # List all notes
@@ -52,6 +59,7 @@ Create a new sticky note with optional color.
 |-----------|------|---------|-------------|
 | `-Body` | string | **Required** | Note content text |
 | `-Color` | string | Yellow | Note color: Blue, Green, Pink, Yellow, White |
+| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in preview/content output |
 
 ```powershell
 # Create a note (default yellow)
@@ -78,6 +86,7 @@ Read the full content of a note. Uses EntryID (preferred) or Index as targeting 
 | `-Index` | int | 0 | Note position number (fallback) |
 | `-Color` | string | All | Filter by color before applying Index (ignored with EntryID) |
 | `-Search` | string | — | Search filter before applying Index (ignored with EntryID) |
+| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in note body output |
 
 ```powershell
 # Read by EntryID (preferred)
@@ -104,6 +113,7 @@ Delete a note from Outlook. Uses EntryID (preferred) or Index as targeting metho
 | `-Index` | int | 0 | Note position number (fallback) |
 | `-Color` | string | All | Filter by color before applying Index (ignored with EntryID) |
 | `-Search` | string | — | Search filter before applying Index (ignored with EntryID) |
+| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in note preview |
 
 ```powershell
 # Delete by EntryID (preferred)

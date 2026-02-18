@@ -15,8 +15,15 @@ param(
     [string]$BCC = "",
     [string[]]$Attachment = @(),
     [switch]$HTML,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Send As (From Specific Account) Script
 # Usage: .\outlook-send-as.ps1 -Account "work@company.com" -To "email@example.com" -Subject "Hi" -Body "text" -Confirm
@@ -31,11 +38,9 @@ if ($CC) { Write-Host "CC: $CC" }
 if ($BCC) { Write-Host "BCC: $BCC" }
 Write-Host "Subject: $Subject"
 Write-Host "Format: $format"
-if ($Body.Length -gt 200) {
-    Write-Host "Body preview: $($Body.Substring(0, 200))..."
-} else {
-    Write-Host "Body preview: $Body"
-}
+$bodyPreview = if ($Body.Length -gt 200) { $Body.Substring(0, 200) + "..." } else { $Body }
+if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
+Write-Host "Body preview: $bodyPreview"
 
 # Validate attachments in preview
 $validAttachments = @()

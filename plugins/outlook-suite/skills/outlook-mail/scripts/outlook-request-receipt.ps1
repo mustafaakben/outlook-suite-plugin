@@ -14,8 +14,15 @@ param(
     [switch]$HTML,
     [switch]$ReadReceipt,
     [switch]$DeliveryReceipt,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Send with Receipt Request Script
 # Usage: .\outlook-request-receipt.ps1 -To "email@example.com" -Subject "Hi" -Body "text" -ReadReceipt -Confirm
@@ -46,6 +53,7 @@ if (-not $ReadReceipt -and -not $DeliveryReceipt) {
         }
     }
 
+    if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
     Write-Host "Body: $bodyPreview" -ForegroundColor Gray
     Write-Host "========================" -ForegroundColor Yellow
 

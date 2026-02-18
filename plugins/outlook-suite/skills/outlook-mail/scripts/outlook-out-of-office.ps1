@@ -6,8 +6,15 @@ param(
     [string]$ExternalMessage = "",
     [datetime]$StartTime,
     [datetime]$EndTime,
-    [switch]$ExternalAudienceAll
+    [switch]$ExternalAudienceAll,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Out of Office Script
 # Configure automatic reply / out of office (Exchange / Microsoft 365)
@@ -107,12 +114,16 @@ try {
                             if ($config.InternalMessage) {
                                 Write-Host "`nInternal Reply:" -ForegroundColor Cyan
                                 $internalText = $config.InternalMessage -replace '<[^>]+>', ''
-                                Write-Host "  $($internalText.Trim())" -ForegroundColor Gray
+                                $internalText = $internalText.Trim()
+                                if ($StripLinks) { $internalText = Strip-Links $internalText }
+                                Write-Host "  $internalText" -ForegroundColor Gray
                             }
                             if ($config.ExternalMessage) {
                                 Write-Host "`nExternal Reply:" -ForegroundColor Cyan
                                 $externalText = $config.ExternalMessage -replace '<[^>]+>', ''
-                                Write-Host "  $($externalText.Trim())" -ForegroundColor Gray
+                                $externalText = $externalText.Trim()
+                                if ($StripLinks) { $externalText = Strip-Links $externalText }
+                                Write-Host "  $externalText" -ForegroundColor Gray
                             }
                         }
                     } catch {
@@ -152,10 +163,14 @@ try {
                 if ($replyState -eq "Scheduled") {
                     Write-Host "Schedule: $($StartTime.ToString('g')) to $($EndTime.ToString('g'))" -ForegroundColor Yellow
                 }
-                Write-Host "Internal Message: $InternalMessage" -ForegroundColor Gray
+                $internalPreview = $InternalMessage
+                if ($StripLinks) { $internalPreview = Strip-Links $internalPreview }
+                Write-Host "Internal Message: $internalPreview" -ForegroundColor Gray
                 if ($ExternalMessage) {
                     $audience = if ($ExternalAudienceAll) { "All" } else { "Known contacts only" }
-                    Write-Host "External Message: $ExternalMessage" -ForegroundColor Gray
+                    $externalPreview = $ExternalMessage
+                    if ($StripLinks) { $externalPreview = Strip-Links $externalPreview }
+                    Write-Host "External Message: $externalPreview" -ForegroundColor Gray
                     Write-Host "External Audience: $audience" -ForegroundColor Gray
                 }
 

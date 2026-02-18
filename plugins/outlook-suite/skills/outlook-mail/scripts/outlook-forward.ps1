@@ -9,8 +9,15 @@ param(
     [string]$CC = "",
     [string]$BCC = "",
     [int]$Days = 7,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Forward Script
 # Usage: .\outlook-forward.ps1 -EntryID "00000000..." -To "colleague@example.com" (preferred)
@@ -92,6 +99,7 @@ try {
         if ($bodyPreview.Length -gt 200) {
             $bodyPreview = $bodyPreview.Substring(0, 200) + "..."
         }
+        if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
 
         if ($Confirm) {
             # Show confirmation summary before sending

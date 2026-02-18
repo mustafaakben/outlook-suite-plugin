@@ -42,6 +42,16 @@ Manage Microsoft Outlook email using PowerShell COM objects.
 & "./scripts/outlook-reply.ps1" -EntryID "00000000..." -Body "Got it, thanks!"
 ```
 
+## Link Stripping
+
+Scripts that output email body content support a `-StripLinks` parameter (type: `bool`, default: `$true`). When enabled, all URLs in the output are replaced with `[URL]` to reduce context window bloat from long tracking URLs, Safe Links wrappers, and marketing links.
+
+- **Default ON**: No action needed — URLs are stripped automatically
+- **To preserve URLs**: Pass `-StripLinks $false`
+
+**Scripts with `-StripLinks` support:**
+`outlook-read-body.ps1`, `outlook-find.ps1`, `outlook-draft.ps1`, `outlook-forward.ps1`, `outlook-reply.ps1`, `outlook-out-of-office.ps1`, `outlook-request-receipt.ps1`, `outlook-rules-create.ps1`, `outlook-rules-list.ps1`, `outlook-schedule-send.ps1`, `outlook-send-as.ps1`, `outlook-send.ps1`, `outlook-voting.ps1`
+
 ## Scripts Overview
 
 **Find and Target**
@@ -124,6 +134,7 @@ Find emails matching search criteria and return their EntryIDs. This is the prim
 | `-Category` | string | — | Only emails assigned this category |
 | `-Folder` | string | Inbox | Folder to search (e.g., "Sent Items", "Archive") |
 | `-Limit` | int | 50 | Max results to return |
+| `-StripLinks` | bool | `$true` | Replace URLs in body snippets with `[URL]` |
 
 **Output per result:** EntryID, Subject, From (name + email), Date, Read/Unread status, Body snippet (~150 chars), Attachments (count + filenames), Importance (if non-normal), Flag status, Categories.
 
@@ -208,6 +219,7 @@ Read the full body content of a specific email. Use `-EntryID` (preferred) or `-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `-Days` | int | 7 | Number of days to look back (only used with -Index) |
+| `-StripLinks` | bool | `$true` | Replace URLs in email body with `[URL]` |
 
 **Examples:**
 
@@ -326,6 +338,7 @@ Create a draft email in the Drafts folder. Safe operation — nothing is sent. S
 | `-BCC` | string | | BCC recipient(s) |
 | `-Attachment` | string[] | | File path(s) to attach. Warns if file not found. |
 | `-HTML` | switch | off | Treat body as HTML instead of plain text |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 
@@ -412,6 +425,7 @@ Send an email directly. **Requires `-Confirm` flag** as a safety measure — wit
 | `-Attachment` | string[] | | File path(s) to attach. Warns if file not found. |
 | `-HTML` | switch | off | Treat body as HTML instead of plain text |
 | `-Confirm` | switch | off | **Required to actually send.** Without it, only preview is shown. |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 
@@ -450,6 +464,7 @@ Send an email from a specific Outlook account. Useful when multiple email accoun
 | `-Attachment` | string[] | | File path(s) to attach. Warns if file not found. |
 | `-HTML` | switch | off | Treat body as HTML instead of plain text |
 | `-Confirm` | switch | off | **Required to actually send.** Without it, only preview is shown. |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 
@@ -485,6 +500,7 @@ Reply to an email. Creates a reply draft by default. **Requires `-Confirm` flag*
 | `-Days` | int | 7 | Number of days to look back (only used with -Index) |
 | `-ReplyAll` | switch | off | Reply to all recipients instead of just the sender |
 | `-Confirm` | switch | off | **Required to actually send.** Without it, reply is saved as draft. |
+| `-StripLinks` | bool | `$true` | Replace URLs in reply body preview with `[URL]` |
 
 **Examples:**
 
@@ -525,6 +541,7 @@ Forward an email. Creates a forward draft by default. **Requires `-Confirm` flag
 | `-BCC` | string | "" | BCC recipient(s) |
 | `-Days` | int | 7 | Number of days to look back (only used with -Index) |
 | `-Confirm` | switch | off | **Required to actually send.** Without it, forward is saved as draft. |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 
@@ -565,6 +582,7 @@ Send an email with voting buttons (polls). Recipients see clickable voting optio
 | `-BCC` | string | "" | BCC recipient(s) |
 | `-HTML` | switch | off | Treat body as HTML instead of plain text |
 | `-Confirm` | switch | off | **Required to actually send.** Without it, only preview is shown. |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 
@@ -1060,6 +1078,7 @@ Schedule an email to be sent at a future date/time. Email goes to Outbox and sen
 | `-ReadReceipt` | switch | `$false` | Request read receipt |
 | `-DeliveryReceipt` | switch | `$false` | Request delivery receipt |
 | `-Confirm` | switch | `$false` | Required to actually schedule the email |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 ```powershell
@@ -1095,6 +1114,7 @@ Send an email with read and/or delivery receipt requests. Requires `-Confirm` to
 | `-ReadReceipt` | switch | `$false` | Request notification when email is read |
 | `-DeliveryReceipt` | switch | `$false` | Request notification when email is delivered |
 | `-Confirm` | switch | `$false` | Required to actually send the email |
+| `-StripLinks` | bool | `$true` | Replace URLs in body preview with `[URL]` |
 
 **Examples:**
 ```powershell
@@ -1185,6 +1205,7 @@ List all email rules with [ON]/[OFF] status indicators. Use `-Detailed` to see c
 |-----------|------|---------|-------------|
 | `-Enabled` | switch | `$false` | Only show enabled rules |
 | `-Detailed` | switch | `$false` | Show conditions, actions, and execution order for each rule |
+| `-StripLinks` | bool | `$true` | Replace URLs in rule conditions/actions with `[URL]` |
 
 **Examples:**
 ```powershell
@@ -1240,6 +1261,7 @@ Create a new Outlook rule for incoming email with flexible conditions and action
 |-----------|------|---------|-------------|
 | `-Disabled` | switch | `$false` | Create the rule in disabled state |
 | `-Force` | switch | `$false` | Allow creation even if rule name already exists |
+| `-StripLinks` | bool | `$true` | Replace URLs in rule preview output with `[URL]` |
 
 **Examples:**
 ```powershell
@@ -1294,6 +1316,12 @@ Configure Out of Office / automatic replies (Exchange / Microsoft 365). Detects 
 |-----------|------|-------------|
 | `-StartTime` | datetime | Schedule start (requires `-EndTime`; sets state to Scheduled) |
 | `-EndTime` | datetime | Schedule end (requires `-StartTime`; must be later than `-StartTime`) |
+
+**Other Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `-StripLinks` | bool | `$true` | Replace URLs in auto-reply message output with `[URL]` |
 
 **Examples:**
 ```powershell

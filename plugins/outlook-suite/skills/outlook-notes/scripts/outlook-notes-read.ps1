@@ -4,8 +4,15 @@ param(
 
     [ValidateSet("All", "Blue", "Green", "Pink", "Yellow", "White")]
     [string]$Color = "All",
-    [string]$Search = ""
+    [string]$Search = "",
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Note Read Script
 # Read full content of a note
@@ -141,6 +148,7 @@ try {
         Write-Host "Created: $($created.ToString('g'))" -ForegroundColor Gray
         Write-Host "Modified: $($modified.ToString('g'))" -ForegroundColor Gray
 
+        if ($StripLinks) { $body = Strip-Links $body }
         Write-Host "`n--- Content ---" -ForegroundColor Cyan
         Write-Host $body -ForegroundColor $displayColor
 

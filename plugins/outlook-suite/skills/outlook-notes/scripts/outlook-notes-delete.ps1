@@ -4,8 +4,15 @@ param(
 
     [ValidateSet("All", "Blue", "Green", "Pink", "Yellow", "White")]
     [string]$Color = "All",
-    [string]$Search = ""
+    [string]$Search = "",
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Note Delete Script
 # Delete a note
@@ -137,6 +144,7 @@ try {
         if ($preview.Length -gt 60) {
             $preview = $preview.Substring(0, 57) + "..."
         }
+        if ($StripLinks) { $preview = Strip-Links $preview }
 
         # Delete the note
         $targetNote.Delete()

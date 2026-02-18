@@ -1,8 +1,15 @@
 param(
     [string]$EntryID = "",
     [int]$Index = 0,
-    [int]$Days = 7
+    [int]$Days = 7,
+    [bool]$StripLinks = $true
 )
+
+# Helper: strip URLs from text to reduce context window bloat
+function Strip-Links([string]$text) {
+    if (-not $text) { return $text }
+    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
+}
 
 # Outlook Email Body Reader
 # Usage: .\outlook-read-body.ps1 -EntryID "00000000..." (preferred)
@@ -66,7 +73,9 @@ try {
         if ($email.CC) { Write-Host "CC: $($email.CC)" }
         if ($email.BCC) { Write-Host "BCC: $($email.BCC)" }
         Write-Host "`n--- BODY ---" -ForegroundColor Gray
-        Write-Host $email.Body
+        $bodyText = $email.Body
+        if ($StripLinks) { $bodyText = Strip-Links $bodyText }
+        Write-Host $bodyText
         Write-Host "--- END ---" -ForegroundColor Gray
 
         if ($email.Attachments.Count -gt 0) {
