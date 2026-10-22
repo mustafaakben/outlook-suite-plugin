@@ -116,6 +116,7 @@ cd plugins/outlook-suite/skills/outlook-mail
 - `plugins/outlook-suite/skills/outlook-contacts/SKILL.md`
 - `plugins/outlook-suite/skills/outlook-tasks/SKILL.md`
 - `plugins/outlook-suite/skills/outlook-notes/SKILL.md`
+- [`CHANGELOG.md`](CHANGELOG.md): what changed in each version
 
 ## Limitations and Known Constraints
 
