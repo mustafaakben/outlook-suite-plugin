@@ -567,6 +567,23 @@ function Find-MailRecords {
     return [pscustomobject]@{ Total = $records.Count; Records = $records; Scanned = $scanned }
 }
 
+# All mail folders under a root (breadth-first), skipping calendar/contacts/tasks/notes folders.
+function Get-MailSubfolders {
+    param($Root, [int]$MaxDepth = 20)
+    $out = New-Object System.Collections.Generic.List[object]
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue(@($Root, 0))
+    while ($queue.Count -gt 0) {
+        $pair = $queue.Dequeue(); $f = $pair[0]; $d = $pair[1]
+        foreach ($c in $f.Folders) {
+            $type = 0; try { $type = [int]$c.DefaultItemType } catch { }
+            if ($type -eq 0) { $out.Add($c) }   # olMailItem folders only
+            if ($d + 1 -lt $MaxDepth) { $queue.Enqueue(@($c, $d + 1)) }
+        }
+    }
+    return , $out
+}
+
 # Adds recipients and attachment names by opening each item (slower; for -Detailed).
 function Add-MailRecordDetails {
     param($Namespace, $Records)
