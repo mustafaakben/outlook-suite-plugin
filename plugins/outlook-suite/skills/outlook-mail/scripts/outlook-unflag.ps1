@@ -1,119 +1,47 @@
 param(
     [string]$EntryID = "",
+    [string]$StoreID = "",
     [int]$Index = 0,
-
     [int]$Days = 7,
-    [switch]$Complete
+    [switch]$Complete,
+    [switch]$Json
 )
 
-# Outlook Unflag/Complete Flag Script
-# Usage: .\outlook-unflag.ps1 -EntryID "00000000..." (preferred)
-# Usage: .\outlook-unflag.ps1 -Index 1 (fallback)
+# Outlook Unflag: remove the follow-up flag, or mark it complete (-Complete).
+# Usage: .\outlook-unflag.ps1 -EntryID "00000000..."
+# Usage: .\outlook-unflag.ps1 -EntryID "00000000..." -Complete
 
-# Flag status constants
-# 0 = olNoFlag
-# 1 = olFlagComplete
-# 2 = olFlagMarked
-
-$Outlook = $null
-$Namespace = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 try {
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
-
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetEmail = $null
-
-    if ($EntryID) {
-        $targetEmail = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetEmail) {
-            Write-Host "ERROR: Email not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-find.ps1 to get valid EntryIDs." -ForegroundColor Gray
+    $null = Connect-Outlook
+    $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
+    $before = switch ([int]$email.FlagStatus) { 2 { "Flagged" } 1 { "Complete" } default { "Not flagged" } }
+    if ($Complete) {
+        try { $email.MarkAsTask(5) }   # olMarkComplete
+        catch {
+            if (-not $email.Sent) { Stop-WithError "Outlook cannot mark a draft's flag complete (only sent or received mail). Clear it instead: run without -Complete." }
+            throw
         }
-    } elseif ($Index -gt 0) {
-        $Inbox = $Namespace.GetDefaultFolder(6)
-        $since = (Get-Date).AddDays(-$Days).ToString("g")
-        $filter = "[ReceivedTime] >= '$since'"
-        $items = $Inbox.Items.Restrict($filter)
-        $items.Sort("[ReceivedTime]", $true)
-
-        $count = 0
-        foreach ($email in $items) {
-            $count++
-            if ($count -eq $Index) {
-                $targetEmail = $email
-                break
+        $email.Save()
+        Write-ActionResult -Title "FLAG MARKED COMPLETE" -Item $email -Changes ([ordered]@{ Before = $before; Now = "Complete" }) -Json:$Json -Action "unflag"
+    } else {
+        if ($before -ne "Not flagged") {
+            try { $email.ClearTaskFlag() } catch { }
+            $email.Save()
+            # ClearTaskFlag can silently do nothing (seen on drafts); verify and fall back.
+            $email = $Namespace.GetItemFromID($email.EntryID)
+            if ([int]$email.FlagStatus -ne 0) {
+                $email.FlagStatus = 0
+                $email.ReminderSet = $false
+                $email.Save()
+                $email = $Namespace.GetItemFromID($email.EntryID)
             }
+            if ([int]$email.FlagStatus -ne 0) { Stop-WithError "Outlook did not clear the flag on this item." }
         }
-
-        if (-not $targetEmail) {
-            Write-Host "`nEmail at index $Index not found in last $Days days." -ForegroundColor Red
-            Write-Host "Use outlook-read.ps1 -Days $Days to see available emails." -ForegroundColor Gray
-            Write-Host "Tip: Try increasing -Days if the email is older." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an email." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-unflag.ps1 -EntryID ""00000000...""" -ForegroundColor Gray
-    }
-
-    if (-not $targetEmail) {
-        # No email found - errors already displayed above
-    } elseif ($targetEmail.FlagStatus -eq 0) {
-        # Email is not flagged
-        $senderAddr = $targetEmail.SenderEmailAddress
-        if ($senderAddr -match "^/O=") { $senderAddr = $targetEmail.SenderName }
-
-        Write-Host "`n[i] Email is not flagged." -ForegroundColor Yellow
-        Write-Host "Subject: $($targetEmail.Subject)" -ForegroundColor Gray
-        Write-Host "From: $($targetEmail.SenderName) <$senderAddr>"
-        Write-Host "Date: $($targetEmail.ReceivedTime.ToString('g'))"
-    } else {
-        # Get sender email with Exchange fallback
-        $senderAddr = $targetEmail.SenderEmailAddress
-        if ($senderAddr -match "^/O=") { $senderAddr = $targetEmail.SenderName }
-
-        $previousFlag = $targetEmail.FlagRequest
-
-        if ($Complete) {
-            # Mark as complete
-            $targetEmail.FlagStatus = 1  # olFlagComplete
-            $targetEmail.Save()
-
-            Write-Host "`n=== FLAG MARKED COMPLETE ===" -ForegroundColor Green
-            Write-Host "Subject: $($targetEmail.Subject)" -ForegroundColor Yellow
-            Write-Host "From: $($targetEmail.SenderName) <$senderAddr>"
-            Write-Host "Date: $($targetEmail.ReceivedTime.ToString('g'))"
-            Write-Host "Flag was: $previousFlag" -ForegroundColor Gray
-        } else {
-            # Clear flag entirely
-            $targetEmail.FlagStatus = 0  # olNoFlag
-            $targetEmail.FlagRequest = ""
-            $targetEmail.ReminderSet = $false
-            $targetEmail.Save()
-
-            Write-Host "`n=== FLAG REMOVED ===" -ForegroundColor Green
-            Write-Host "Subject: $($targetEmail.Subject)" -ForegroundColor Yellow
-            Write-Host "From: $($targetEmail.SenderName) <$senderAddr>"
-            Write-Host "Date: $($targetEmail.ReceivedTime.ToString('g'))"
-            Write-Host "Removed flag: $previousFlag" -ForegroundColor Gray
-        }
+        Write-ActionResult -Title $(if ($before -eq "Not flagged") { "EMAIL WAS NOT FLAGGED" } else { "FLAG REMOVED" }) -Item $email -Changes ([ordered]@{ Before = $before; Now = "Not flagged" }) -Json:$Json -Action "unflag"
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Namespace) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

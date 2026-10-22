@@ -356,6 +356,42 @@ function Write-MailRecord {
     }
 }
 
+# Standard result of an action on one item: title, the item (EntryID first), what changed.
+# -Changes is an ordered hashtable of label -> value. With -Json prints one object instead.
+function Write-ActionResult {
+    param([string]$Title, $Item, $Changes = [ordered]@{}, [switch]$Json, [string]$Action = "")
+    $rec = ConvertTo-MailRecord $Item
+    if ($Json) {
+        $o = ConvertTo-JsonRecord $rec
+        $o.Action = $Action; $o.Result = $Title
+        foreach ($k in $Changes.Keys) { $o[$k] = $Changes[$k] }
+        Write-Json $o
+        return
+    }
+    Write-Host "=== $Title ===" -ForegroundColor Green
+    Write-Host "  EntryID: $($rec.EntryID)"
+    Write-Host "  Subject: $($rec.Subject)" -ForegroundColor Yellow
+    if ($rec.From) { Write-Host "  From: $($rec.From)" }
+    if ($rec.Date) { Write-Host "  Date: $(Format-MailDate $rec.Date)" }
+    if ($rec.Folder) { Write-Host "  Folder: $($rec.Folder)" -ForegroundColor DarkGray }
+    foreach ($k in $Changes.Keys) { Write-Host "  ${k}: $($Changes[$k])" -ForegroundColor Cyan }
+}
+
+# Shows what an irreversible action would do, then asks Approve-Action. Returns $true to proceed.
+function Confirm-ItemAction {
+    param([string]$Action, [string]$Title, $Item, [bool]$Confirmed, $Details = [ordered]@{}, [string]$What = "")
+    if ($Confirmed -or -not (Test-ConfirmRequired -Action $Action)) { return $true }
+    $rec = ConvertTo-MailRecord $Item
+    Write-Host "=== $Title (PREVIEW) ===" -ForegroundColor Yellow
+    Write-Host "  EntryID: $($rec.EntryID)"
+    Write-Host "  Subject: $($rec.Subject)" -ForegroundColor Yellow
+    if ($rec.From) { Write-Host "  From: $($rec.From)" }
+    if ($rec.Date) { Write-Host "  Date: $(Format-MailDate $rec.Date)" }
+    if ($rec.Folder) { Write-Host "  Folder: $($rec.Folder)" -ForegroundColor DarkGray }
+    foreach ($k in $Details.Keys) { Write-Host "  ${k}: $($Details[$k])" -ForegroundColor Cyan }
+    return (Approve-Action -Action $Action -Confirmed $false -What $(if ($What) { $What } else { $Title.ToLower() }))
+}
+
 # JSON-friendly copy of a record (dates as ISO 8601).
 function ConvertTo-JsonRecord {
     param($Record)
