@@ -364,6 +364,216 @@ function ConvertTo-JsonRecord {
 }
 
 # ---------------------------------------------------------------------------
+# Fast listing with Folder.GetTable
+# ---------------------------------------------------------------------------
+
+$script:Prop = @{
+    LongTermEntryID = "http://schemas.microsoft.com/mapi/proptag/0x66700102"   # same value as item.EntryID
+    ConversationID  = "http://schemas.microsoft.com/mapi/proptag/0x30130102"
+    MessageFlags    = "http://schemas.microsoft.com/mapi/proptag/0x0E070003"   # bit 1 = read
+    HasAttach       = "http://schemas.microsoft.com/mapi/proptag/0x0E1B000B"
+    FlagStatus      = "http://schemas.microsoft.com/mapi/proptag/0x10900003"
+    SenderSmtp      = "http://schemas.microsoft.com/mapi/proptag/0x5D01001F"
+    Preview         = "urn:schemas:httpmail:textdescription"                   # first 255 chars of the body
+}
+
+function ConvertTo-DaslText([string]$s) { return $s.Replace("'", "''") }
+
+# Build a DASL filter (all comparisons by namespace; dates in UTC as DASL requires).
+function New-MailDaslFilter {
+    param(
+        [datetime]$From, [datetime]$To,
+        [string]$Subject, [string]$Sender, [string]$Recipient,
+        [switch]$UnreadOnly, [switch]$ReadOnly, [switch]$HasAttachment, [switch]$Flagged,
+        [string]$Importance, [string]$Category, [string]$BodyIndexed
+    )
+    $q = @()
+    $d = '"urn:schemas:httpmail:datereceived"'
+    if ($From) { $q += "$d >= '$($From.ToUniversalTime().ToString('g'))'" }
+    if ($To) { $q += "$d <= '$($To.ToUniversalTime().ToString('g'))'" }
+    if ($Subject) { $q += """urn:schemas:httpmail:subject"" LIKE '%$(ConvertTo-DaslText $Subject)%'" }
+    if ($Sender) {
+        $s = ConvertTo-DaslText $Sender
+        $q += "(""urn:schemas:httpmail:fromname"" LIKE '%$s%' OR ""$($script:Prop.SenderSmtp)"" LIKE '%$s%' OR ""urn:schemas:httpmail:fromemail"" LIKE '%$s%')"
+    }
+    if ($Recipient) { $q += """urn:schemas:httpmail:displayto"" LIKE '%$(ConvertTo-DaslText $Recipient)%'" }
+    if ($UnreadOnly) { $q += """urn:schemas:httpmail:read"" = 0" }
+    if ($ReadOnly) { $q += """urn:schemas:httpmail:read"" = 1" }
+    if ($HasAttachment) { $q += """urn:schemas:httpmail:hasattachment"" = 1" }
+    if ($Flagged) { $q += """$($script:Prop.FlagStatus)"" = 2" }
+    if ($Importance) {
+        $map = @{ "Low" = 0; "Normal" = 1; "High" = 2 }
+        $q += """urn:schemas:httpmail:importance"" = $($map[$Importance])"
+    }
+    if ($Category) { $q += """urn:schemas-microsoft-com:office:office#Keywords"" LIKE '%$(ConvertTo-DaslText $Category)%'" }
+    if ($BodyIndexed) { $q += """urn:schemas:httpmail:textdescription"" ci_phrasematch '$(ConvertTo-DaslText $BodyIndexed)'" }
+    if ($q.Count -eq 0) { return "" }
+    return "@SQL=" + ($q -join " AND ")
+}
+
+# Rows of a folder as list records, newest first. Reads only table columns; no item is opened.
+function Get-MailTableRecords {
+    param($Folder, [string]$Filter = "", [int]$Limit = 50, [string]$SortBy = "ReceivedTime")
+    $table = if ($Filter) { $Folder.GetTable($Filter) } else { $Folder.GetTable() }
+    $table.Columns.RemoveAll()
+    $cols = @("EntryID", "Subject", "SenderName", $script:Prop.SenderSmtp, "To", "ReceivedTime",
+        $script:Prop.MessageFlags, $script:Prop.HasAttach, "Importance", "Categories", $script:Prop.FlagStatus,
+        $script:Prop.Preview, $script:Prop.LongTermEntryID, $script:Prop.ConversationID)
+    foreach ($c in $cols) { [void]$table.Columns.Add($c) }
+    $table.Sort($SortBy, $true)
+    $total = $table.GetRowCount()
+    $n = [Math]::Min($Limit, $total)
+    $rows = $null
+    if ($n -gt 0) { $rows = $table.GetArray($n) }   # direct assignment keeps the 2-D array (an if-expression would flatten it)
+    $store = $Folder.StoreID; $path = $Folder.FolderPath
+    $list = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $n; $i++) {
+        $eid = $rows[$i, 12]; $eid = if ($eid -is [byte[]]) { [Convert]::ToHexString($eid) } else { [string]$rows[$i, 0] }
+        $conv = $rows[$i, 13]; $conv = if ($conv -is [byte[]]) { [Convert]::ToHexString($conv) } else { "" }
+        $name = [string]$rows[$i, 2]; $smtp = [string]$rows[$i, 3]
+        $flags = $rows[$i, 6]
+        $flagStatus = [int]$rows[$i, 10]
+        $rec = [ordered]@{
+            EntryID        = $eid
+            StoreID        = $store
+            ConversationID = $conv
+            Folder         = $path
+            Subject        = [string]$rows[$i, 1]
+            From           = $(if ($smtp -and $smtp -ne $name) { "$name <$smtp>" } else { $name })
+            ToLine         = [string]$rows[$i, 4]
+            Date           = $rows[$i, 5]
+            Unread         = $(if ($null -ne $flags) { -not ([int]$flags -band 1) } else { $null })
+            Importance     = $script:ImportanceNames[[int]$rows[$i, 8]]
+            Flag           = $(if ($flagStatus -eq 2) { "Flagged" } elseif ($flagStatus -eq 1) { "Complete" } else { "" })
+            Categories     = [string]$rows[$i, 9]
+            HasAttachments = [bool]$rows[$i, 7]
+            Preview        = (Format-Preview ([string]$rows[$i, 11]) 200)
+        }
+        $list.Add($rec)
+    }
+    return [pscustomobject]@{ Total = $total; Records = $list }
+}
+
+# The shared search engine behind outlook-find / outlook-read / outlook-search.
+# Everything except substring body search runs as one indexed Table query.
+# -BodyContains keeps exact substring semantics (nothing missed): it scans only the
+# items that already passed the other filters. -FastBody uses the content index
+# instead (word match, much faster, may miss mail not yet indexed).
+function Find-MailRecords {
+    param(
+        $Folder,
+        [datetime]$From, [datetime]$To,
+        [string]$Subject, [string]$Sender, [string]$Recipient, [string]$BodyContains,
+        [switch]$FastBody,
+        [switch]$UnreadOnly, [switch]$ReadOnly, [switch]$HasAttachment, [switch]$Flagged,
+        [string]$Importance, [string]$Category,
+        [int]$Limit = 50, [int]$MaxScan = 5000
+    )
+    $common = @{ From = $From; To = $To; Subject = $Subject; Sender = $Sender; Recipient = $Recipient
+        UnreadOnly = $UnreadOnly; ReadOnly = $ReadOnly; HasAttachment = $HasAttachment; Flagged = $Flagged
+        Importance = $Importance; Category = $Category }
+    if (-not $From) { $common.Remove("From") }
+    if (-not $To) { $common.Remove("To") }
+
+    if (-not $BodyContains -or $FastBody) {
+        if ($BodyContains) { $common.BodyIndexed = $BodyContains }
+        $filter = New-MailDaslFilter @common
+        return Get-MailTableRecords -Folder $Folder -Filter $filter -Limit $Limit
+    }
+
+    # Exact substring body search over the pre-filtered candidates.
+    $filter = New-MailDaslFilter @common
+    $items = $Folder.Items
+    if ($filter) { $items = $Folder.Items.Restrict($filter) }
+    $items.Sort("[ReceivedTime]", $true)
+    $hits = New-Object System.Collections.Generic.List[string]
+    $scanned = 0
+    foreach ($it in $items) {
+        $scanned++
+        if ($scanned -gt $MaxScan) { break }
+        try { if ($it.Body -like "*$BodyContains*") { $hits.Add($it.EntryID) } } catch { }
+        if ($hits.Count -ge $Limit) { break }
+    }
+    if ($hits.Count -eq 0) { return [pscustomobject]@{ Total = 0; Records = @(); Scanned = $scanned } }
+    # Re-read the hits through the table so records have the same shape as other searches.
+    $all = Get-MailTableRecords -Folder $Folder -Filter $filter -Limit 100000
+    $keep = @{}; foreach ($h in $hits) { $keep[$h] = $true }
+    $records = @($all.Records | Where-Object { $keep.ContainsKey($_.EntryID) })
+    return [pscustomobject]@{ Total = $records.Count; Records = $records; Scanned = $scanned }
+}
+
+# Adds recipients and attachment names by opening each item (slower; for -Detailed).
+function Add-MailRecordDetails {
+    param($Namespace, $Records)
+    foreach ($r in $Records) {
+        try {
+            $it = $Namespace.GetItemFromID($r.EntryID, $r.StoreID)
+            $r.To = @(Get-RecipientList $it 1)
+            $r.CC = @(Get-RecipientList $it 2)
+            $names = @(); for ($i = 1; $i -le $it.Attachments.Count; $i++) { $names += $it.Attachments.Item($i).FileName }
+            $r.Attachments = $names
+        } catch { }
+    }
+}
+
+# Text rendering of list results. Folder and StoreID are printed once, not per row.
+function Write-MailList {
+    param($Result, $Folder, [string]$Title = "OUTLOOK FIND", [string[]]$Criteria = @(), [int]$Limit = 50)
+    Write-Host "=== $Title ===" -ForegroundColor Cyan
+    Write-Host "Folder: $($Folder.FolderPath)"
+    Write-Host "StoreID: $($Folder.StoreID)" -ForegroundColor DarkGray
+    if ($Criteria.Count -gt 0) { Write-Host "Filters: $($Criteria -join ' | ')" -ForegroundColor Gray }
+    Write-Host ""
+    $n = 0
+    foreach ($r in $Result.Records) {
+        $n++
+        Write-Host "--- #$n ---" -ForegroundColor Cyan
+        Write-Host "  EntryID: $($r.EntryID)"
+        if ($r.ConversationID) { Write-Host "  ConversationID: $($r.ConversationID)" -ForegroundColor DarkGray }
+        Write-Host "  Subject: $($r.Subject)" -ForegroundColor Yellow
+        Write-Host "  From: $($r.From)"
+        if ($r.Contains("To") -and $r.To) { Write-Host "  To: $($r.To -join '; ')" } elseif ($r.ToLine) { Write-Host "  To: $($r.ToLine)" }
+        if ($r.Contains("CC") -and $r.CC) { Write-Host "  CC: $($r.CC -join '; ')" }
+        Write-Host "  Date: $(Format-MailDate $r.Date)"
+        Write-Host "  Status: $(if ($r.Unread) { 'UNREAD' } else { 'read' })"
+        if ($r.Importance -and $r.Importance -ne "Normal") { Write-Host "  Importance: $($r.Importance)" -ForegroundColor Magenta }
+        if ($r.Flag) { Write-Host "  Flag: $($r.Flag)" -ForegroundColor Red }
+        if ($r.Categories) { Write-Host "  Categories: $($r.Categories)" -ForegroundColor Green }
+        if ($r.Contains("Attachments") -and $r.Attachments) { Write-Host "  Attachments ($($r.Attachments.Count)): $($r.Attachments -join ', ')" }
+        elseif ($r.HasAttachments) { Write-Host "  Attachments: yes (names: outlook-attachment-save.ps1 -EntryID <id> -ListOnly)" }
+        if ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
+        Write-Host ""
+    }
+    if ($n -eq 0) {
+        Write-Host "No matching emails found. Try a larger -Days, fewer filters, or another -Folder (outlook-folders.ps1)." -ForegroundColor Gray
+    } else {
+        $more = if ($Result.Total -gt $n) { " of $($Result.Total) matching; raise -Limit for more" } else { "" }
+        Write-Host "=== Showing $n$more ===" -ForegroundColor Cyan
+        Write-Host "Next: outlook-read-body.ps1 -EntryID <EntryID> | outlook-conversation.ps1 -EntryID <EntryID> | outlook-reply.ps1 -EntryID <EntryID> ..." -ForegroundColor DarkGray
+    }
+}
+
+# JSON rendering of list results.
+function Write-MailListJson {
+    param($Result, $Folder, [hashtable]$Query = @{})
+    $records = @(foreach ($r in $Result.Records) {
+        $o = ConvertTo-JsonRecord $r
+        $o.Remove("Folder"); $o.Remove("StoreID")
+        $o
+    })
+    Write-Json ([ordered]@{ folder = $Folder.FolderPath; storeId = $Folder.StoreID; total = $Result.Total; count = $records.Count; query = $Query; items = $records })
+}
+
+# Resolve -Days / -DateFrom / -DateTo into a [From, To] pair (To may be $null = now).
+function Resolve-DateRange {
+    param([int]$Days = 7, $DateFrom, $DateTo)
+    if ($DateFrom -and $DateTo) { return @([datetime]$DateFrom, ([datetime]$DateTo).Date.AddDays(1).AddMinutes(-1)) }
+    if ($DateFrom) { return @([datetime]$DateFrom, $null) }
+    if ($DateTo) { $t = ([datetime]$DateTo).Date.AddDays(1).AddMinutes(-1); return @($t.AddDays(-$Days), $t) }
+    return @((Get-Date).AddDays(-$Days), $null)
+}
+
+# ---------------------------------------------------------------------------
 # Links: citation-style references instead of long URLs
 # ---------------------------------------------------------------------------
 
