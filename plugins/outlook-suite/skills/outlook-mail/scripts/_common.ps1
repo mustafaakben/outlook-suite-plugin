@@ -18,7 +18,9 @@ Set-StrictMode -Off
 function Connect-Outlook {
     if ($global:OutlookSuite -and $global:OutlookSuite.App) {
         try {
-            $null = $global:OutlookSuite.Namespace.CurrentUser
+            # A method call, not a property read: on a dead session (Outlook closed or
+            # crashed) PowerShell returns $null for COM properties instead of throwing.
+            $null = $global:OutlookSuite.App.GetNamespace("MAPI").GetDefaultFolder(6)
             Set-Variable -Name Outlook -Scope 1 -Value $global:OutlookSuite.App
             Set-Variable -Name Namespace -Scope 1 -Value $global:OutlookSuite.Namespace
             return $global:OutlookSuite.App
@@ -28,6 +30,18 @@ function Connect-Outlook {
     }
 
     $wasRunning = [bool](Get-Process -Name OUTLOOK -ErrorAction SilentlyContinue)
+    if (-not $wasRunning) {
+        # Start Outlook with its window, never headless through COM: after a crash, a
+        # COM-started Outlook waits on a recovery prompt it cannot show and blocks every call.
+        Start-Process outlook.exe
+        $deadline = (Get-Date).AddSeconds(90)
+        while (-not (Get-Process -Name OUTLOOK -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })) {
+            if ((Get-Date) -gt $deadline) {
+                throw "Outlook did not start within 90 s. Open Outlook once by hand (it may be showing a prompt) and retry."
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
     $app = New-Object -ComObject Outlook.Application
     $ns = $app.GetNamespace("MAPI")
     if (-not $wasRunning) {
