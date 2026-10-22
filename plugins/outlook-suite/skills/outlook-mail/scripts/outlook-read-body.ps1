@@ -20,6 +20,17 @@ param(
 . (Join-Path $PSScriptRoot "_common.ps1")
 if (-not $StripLinks) { $Links = "full" }
 
+# What Copilot stored on the email: priority, headline, reason, suggested replies.
+function Write-CopilotBlock($ci) {
+    if (-not ($ci.Priority -or $ci.Headline -or $ci.Reason -or $ci.SmartReplies.Count)) { return }
+    Write-Host "  Copilot:" -ForegroundColor Magenta
+    if ($ci.Priority) { Write-Host "    Priority: $($ci.Priority)" }
+    if ($ci.Headline) { Write-Host "    Headline: $($ci.Headline)" }
+    if ($ci.Reason) { Write-Host "    Reason: $($ci.Reason)" }
+    $k = 0
+    foreach ($s in $ci.SmartReplies) { $k++; Write-Host "    Suggested reply $k`: $s" }
+}
+
 try {
     $null = Connect-Outlook
     $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
@@ -27,8 +38,10 @@ try {
     if ($Format -eq "html") {
         $rec = ConvertTo-MailRecord $email -WithRecipients
         $rec.HTMLBody = $email.HTMLBody
+        $rec.Copilot = Get-CopilotInsight $email
         if ($Json) { Write-Json (ConvertTo-JsonRecord $rec); exit 0 }
         Write-MailRecord $rec -Header "=== EMAIL (HTML) ==="
+        Write-CopilotBlock $rec.Copilot
         Write-Host "--- HTML BODY ---" -ForegroundColor Gray
         Write-Host $rec.HTMLBody
         Write-Host "--- END ---" -ForegroundColor Gray
@@ -36,8 +49,10 @@ try {
     }
 
     $rec = ConvertTo-MailRecord $email -WithRecipients -WithBody -Links $Links
+    $rec.Copilot = Get-CopilotInsight $email
     if ($Json) { Write-Json (ConvertTo-JsonRecord $rec); exit 0 }
     Write-MailRecord $rec -Header "=== EMAIL ===" -LinkTable
+    Write-CopilotBlock $rec.Copilot
     Write-Host "--- END ---" -ForegroundColor Gray
 }
 catch {

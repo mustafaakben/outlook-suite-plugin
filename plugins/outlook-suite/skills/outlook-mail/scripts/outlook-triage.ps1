@@ -19,6 +19,7 @@ param(
     [ValidateSet("", "Newest", "Oldest", "Priority")]
     [string]$Sort = "",
     [int]$Limit = 100,
+    [switch]$Copilot,                # add Copilot's reason and suggested replies (read per email shown)
     [switch]$Json
 )
 
@@ -27,26 +28,24 @@ param(
 #   tagged    mail with a category, last 3 days, read and unread, grouped by its tags
 #   reply     mail you have not replied to, last 7 days, any tag or none, oldest first
 # Every filter works with every view and overrides the view's default.
-# Each row: date, sender, exact subject, tags, unread, replied, Copilot priority,
-# whether you are in To or only CC, recipient count, flag due date, EntryID.
+# Each row: date, sender, exact subject, tags, unread, replied, Copilot priority and
+# headline, whether you are in To or only CC, recipient count, flag due date, EntryID.
+# -Copilot adds Copilot's reason for the priority and its suggested replies (slower: per email).
 #
 # Usage: .\outlook-triage.ps1
 # Usage: .\outlook-triage.ps1 untagged -Days 7 -All
 # Usage: .\outlook-triage.ps1 tagged -Category "@Action,@Review" -Unread
 # Usage: .\outlook-triage.ps1 reply -Category "!Urgent,@Action" -Priority High -Json
 # Usage: .\outlook-triage.ps1 tagged -All -Folder "Inbox/Projects"
+# Usage: .\outlook-triage.ps1 reply -Priority High -Copilot
 
 . (Join-Path $PSScriptRoot "_common.ps1")
 
-# Copilot's inbox priority (Outlook's "Marked as high/low priority by Copilot") is stored on
-# each message as the named property CopilotInboxScore: 5 high, 3 normal, 1 low.
-$CopilotScore = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/CopilotInboxScore"
 $LastVerb = "http://schemas.microsoft.com/mapi/proptag/0x10810003"   # 102 reply, 103 reply all, 104 forward
 $FlagDue = "http://schemas.microsoft.com/mapi/id/{00062003-0000-0000-C000-000000000046}/81050040"
 $ToMe = "http://schemas.microsoft.com/mapi/proptag/0x0057000B"      # Outlook's own "sent to me" / "CC to me" flags
 $CcMe = "http://schemas.microsoft.com/mapi/proptag/0x0058000B"
 $Keywords = '"urn:schemas-microsoft-com:office:office#Keywords"'
-$PriorityNames = @{ 5 = "High"; 3 = "Normal"; 1 = "Low" }
 $VerbNames = @{ 102 = "replied"; 103 = "replied all"; 104 = "forwarded" }
 
 function Split-List([string]$s) { return @($s -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
@@ -107,8 +106,8 @@ try {
     $table.Columns.RemoveAll()
     $cols = @($script:Prop.LongTermEntryID, "Subject", "SenderName", $script:Prop.SenderSmtp, "ReceivedTime",
         $script:Prop.MessageFlags, "urn:schemas:httpmail:displayto", "urn:schemas:httpmail:displaycc", "Categories",
-        $script:Prop.FlagStatus, $FlagDue, $LastVerb, $CopilotScore, $script:Prop.ConversationID, $script:Prop.Preview,
-        $ToMe, $CcMe)
+        $script:Prop.FlagStatus, $FlagDue, $LastVerb, $script:CopilotProp.Score, $script:Prop.ConversationID, $script:Prop.Preview,
+        $ToMe, $CcMe, $script:CopilotProp.Headline)
     foreach ($c in $cols) { [void]$table.Columns.Add($c) }
     $table.Sort("ReceivedTime", $true)
     $rowCount = $table.GetRowCount()
@@ -125,7 +124,7 @@ try {
         $isReplied = $verb -in 102, 103
         if ($replyState -eq "notreplied" -and $isReplied) { continue }
         if ($replyState -eq "replied" -and -not $isReplied) { continue }
-        $score = $rows[$i, 12]; $prio = if ($null -ne $score -and $PriorityNames.ContainsKey([int]$score)) { $PriorityNames[[int]$score] } else { "" }
+        $prio = ConvertTo-CopilotPriority $rows[$i, 12]
         if ($wantPriority.Count -gt 0 -and $prio -notin $wantPriority) { continue }
 
         $toNames = @(Split-List ([string]$rows[$i, 6])); $ccNames = @(Split-List ([string]$rows[$i, 7]))
@@ -150,6 +149,7 @@ try {
             Replied         = $isReplied
             LastAction      = $(if ($VerbNames.ContainsKey($verb)) { $VerbNames[$verb] } else { "" })
             CopilotPriority = $prio
+            CopilotHeadline = [string]$rows[$i, 17]
             You             = $you
             Recipients      = $toNames.Count + $ccNames.Count
             Flag            = $(if ($flagStatus -eq 2) { "Flagged" } elseif ($flagStatus -eq 1) { "Complete" } else { "" })
@@ -173,6 +173,16 @@ try {
     }
     $shown = @($records | Select-Object -First $Limit)
     foreach ($r in $shown) { $r.Preview = Format-Preview $r.Preview 160 }
+    if ($Copilot) {
+        # Reason and suggested replies are not table columns: read them per email shown.
+        foreach ($r in $shown) {
+            $r.CopilotReason = ""; $r.SmartReplies = @()
+            try {
+                $ci = Get-CopilotInsight ($Namespace.GetItemFromID($r.EntryID, $target.StoreID))
+                $r.CopilotReason = $ci.Reason; $r.SmartReplies = @($ci.SmartReplies)
+            } catch { }
+        }
+    }
 
     $filters = @()
     $filters += if ($since) { "since $(Format-MailDate $since)" } else { "any date" }
@@ -221,6 +231,11 @@ try {
         Write-Host "  From: $($r.From)   ($you, $($r.Recipients) recipient$(if ($r.Recipients -ne 1) { 's' }))"
         if ($r.Categories.Count) { Write-Host "  Tags: $($r.Categories -join ', ')" -ForegroundColor Green }
         if ($r.Flag) { Write-Host "  Flag: $($r.Flag)$(if ($r.FlagDue) { ", due $($r.FlagDue)" })" -ForegroundColor Red }
+        if ($r.CopilotHeadline) { Write-Host "  Copilot: $($r.CopilotHeadline)" -ForegroundColor Magenta }
+        if ($r.Contains("CopilotReason") -and $r.CopilotReason) { Write-Host "  Copilot reason: $($r.CopilotReason)" -ForegroundColor Magenta }
+        if ($r.Contains("SmartReplies") -and $r.SmartReplies.Count) {
+            $k = 0; Write-Host ("  Suggested replies: " + (($r.SmartReplies | ForEach-Object { $k++; "$k) $_" }) -join "  ")) -ForegroundColor Magenta
+        }
         if ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
         Write-Host "  EntryID: $($r.EntryID)" -ForegroundColor DarkGray
         Write-Host ""
