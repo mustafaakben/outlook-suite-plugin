@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$EntryID = "",
     [int]$Index = 0,
 
@@ -12,6 +12,8 @@ param(
     [switch]$HTML,
     [int]$Limit = 20
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Outlook Draft Update Script
 # Usage: .\outlook-draft-update.ps1 -EntryID "00000000..." -Subject "Updated Subject" (preferred)
@@ -134,6 +136,7 @@ try {
         if ($changes.Count -eq 0) {
             Write-Host "`nNo changes specified. Use parameters like -To, -Subject, -Body, -AddAttachment, etc." -ForegroundColor Yellow
         } else {
+            Assert-OutlookRecipients $targetDraft
             $targetDraft.Save()
 
             Write-Host "`n=== DRAFT UPDATED ===" -ForegroundColor Green
@@ -160,7 +163,7 @@ try {
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 finally {
     if ($targetDraft) {

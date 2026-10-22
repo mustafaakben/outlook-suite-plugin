@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)]
     [string]$To,
 
@@ -17,6 +17,8 @@ param(
     [switch]$Confirm,
     [bool]$StripLinks = $true
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Helper: strip URLs from text to reduce context window bloat
 function Strip-Links([string]$text) {
@@ -99,6 +101,8 @@ if (-not $ReadReceipt -and -not $DeliveryReceipt) {
                 }
             }
 
+            Assert-OutlookRecipients $Mail
+
             $Mail.Send()
 
             Write-Host "`n=== EMAIL SENT ===" -ForegroundColor Green
@@ -108,7 +112,7 @@ if (-not $ReadReceipt -and -not $DeliveryReceipt) {
             if ($DeliveryReceipt) { Write-Host "Delivery receipt will be sent when email reaches recipient's server." -ForegroundColor Gray }
         }
         catch {
-            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+            throw
         }
         finally {
             if ($Mail) {

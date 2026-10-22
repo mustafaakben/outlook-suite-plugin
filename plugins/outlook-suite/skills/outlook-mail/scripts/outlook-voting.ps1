@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)]
     [string]$To,
 
@@ -15,6 +15,8 @@ param(
     [switch]$Confirm,
     [bool]$StripLinks = $true
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Helper: strip URLs from text to reduce context window bloat
 function Strip-Links([string]$text) {
@@ -91,6 +93,8 @@ try {
         # Set voting options
         $Mail.VotingOptions = $Options
 
+        Assert-OutlookRecipients $Mail
+
         $Mail.Send()
 
         Write-Host "`n=== VOTING EMAIL SENT ===" -ForegroundColor Green
@@ -99,7 +103,7 @@ try {
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 finally {
     if ($Mail) {

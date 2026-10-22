@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)]
     [string]$To,
 
@@ -14,6 +14,8 @@ param(
     [switch]$HTML,
     [bool]$StripLinks = $true
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Helper: strip URLs from text to reduce context window bloat
 function Strip-Links([string]$text) {
@@ -62,6 +64,8 @@ try {
         }
     }
 
+    Assert-OutlookRecipients $Mail
+
     $Mail.Save()
 
     Write-Host "`n=== DRAFT CREATED ===" -ForegroundColor Green
@@ -80,7 +84,7 @@ try {
     Write-Host "`nDraft saved to Drafts folder." -ForegroundColor Cyan
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 finally {
     if ($Mail) {

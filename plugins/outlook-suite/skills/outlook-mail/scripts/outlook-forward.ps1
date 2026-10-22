@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$EntryID = "",
     [int]$Index = 0,
 
@@ -12,6 +12,8 @@ param(
     [switch]$Confirm,
     [bool]$StripLinks = $true
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Helper: strip URLs from text to reduce context window bloat
 function Strip-Links([string]$text) {
@@ -119,10 +121,13 @@ try {
                 Write-Host $bodyPreview
             }
 
+            Assert-OutlookRecipients $forward
+
             $forward.Send()
             Write-Host "`n=== EMAIL FORWARDED ===" -ForegroundColor Green
         } else {
             # Save as draft
+            Assert-OutlookRecipients $forward
             $forward.Save()
 
             Write-Host "`n=== FORWARD DRAFT CREATED ===" -ForegroundColor Green
@@ -145,7 +150,7 @@ try {
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 finally {
     if ($forward) {

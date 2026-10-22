@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$EntryID = "",
     [int]$Index = 0,
 
@@ -10,6 +10,8 @@ param(
     [switch]$Confirm,
     [bool]$StripLinks = $true
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Helper: strip URLs from text to reduce context window bloat
 function Strip-Links([string]$text) {
@@ -117,10 +119,13 @@ try {
             Write-Host "`nYour reply:" -ForegroundColor Cyan
             Write-Host $bodyPreview
 
+            Assert-OutlookRecipients $reply
+
             $reply.Send()
             Write-Host "`n=== $replyType SENT ===" -ForegroundColor Green
         } else {
             # Save as draft
+            Assert-OutlookRecipients $reply
             $reply.Save()
 
             Write-Host "`n=== $replyType DRAFT CREATED ===" -ForegroundColor Green
@@ -140,7 +145,7 @@ try {
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    throw
 }
 finally {
     if ($reply) {

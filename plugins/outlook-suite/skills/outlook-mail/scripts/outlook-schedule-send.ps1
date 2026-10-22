@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)]
     [string]$To,
 
@@ -20,6 +20,8 @@ param(
     [switch]$Confirm,
     [bool]$StripLinks = $true
 )
+
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")
 
 # Helper: strip URLs from text to reduce context window bloat
 function Strip-Links([string]$text) {
@@ -119,6 +121,7 @@ if ($SendAt -le (Get-Date)) {
             }
 
             # Send (will be held in Outbox until SendAt time)
+            Assert-OutlookRecipients $Mail
             $Mail.Send()
 
             Write-Host "`n=== EMAIL SCHEDULED ===" -ForegroundColor Green
@@ -131,7 +134,7 @@ if ($SendAt -le (Get-Date)) {
             Write-Host "Keep Outlook running until the scheduled time." -ForegroundColor Yellow
         }
         catch {
-            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+            throw
         }
         finally {
             if ($Mail) {
