@@ -11,6 +11,7 @@ param(
     [string]$From = "",
     [string]$Subject = "",
     [string]$Folder = "Inbox",
+    [switch]$AllFolders,             # every received-mail folder (skips Sent, Drafts, Deleted, Junk, Outbox, system folders)
     [switch]$Why,                    # add Copilot's reason for each row shown (one read per email)
     [switch]$Summary,                # counts per priority level only
     [int]$Limit = 100,
@@ -25,6 +26,7 @@ param(
 # Usage: .\outlook-priority.ps1 -Days 1 -Unread
 # Usage: .\outlook-priority.ps1 -Days 7 -Priority High -Why
 # Usage: .\outlook-priority.ps1 -Days 30 -Summary
+# Usage: .\outlook-priority.ps1 -Days 1 -AllFolders            # all received mail, not only the Inbox
 # Usage: .\outlook-priority.ps1 -Category "@Action" -Priority High,Normal -Json
 
 . (Join-Path $PSScriptRoot "_common.ps1")
@@ -51,7 +53,19 @@ try {
     }
 
     $null = Connect-Outlook
-    $target = Resolve-OutlookFolder -Namespace $Namespace -Path $Folder
+    if ($AllFolders -and $PSBoundParameters.ContainsKey("Folder")) { throw "-AllFolders and -Folder cannot be used together." }
+    if ($AllFolders) {
+        # Received mail is the Inbox plus the folders rules move it to; skip folders that hold no received mail.
+        $root = $Namespace.DefaultStore.GetRootFolder()
+        $skip = @(foreach ($id in 3, 4, 5, 16, 20, 23) { try { $Namespace.GetDefaultFolder($id).FolderPath } catch { } })
+        $skip += @("Conversation History", "Yammer Root", "RSS Feeds" | ForEach-Object { "$($root.FolderPath)\$_" })
+        $folders = @((Get-MailSubfolders $root) | Where-Object {
+                $p = $_.FolderPath; -not ($skip | Where-Object { $p -eq $_ -or $p.StartsWith("$_\") }) })
+        $folderLabel = "all received mail ($($folders.Count) folders; not Sent, Drafts, Deleted, Junk, Outbox)"
+    } else {
+        $target = Resolve-OutlookFolder -Namespace $Namespace -Path $Folder
+        $folders = @($target); $folderLabel = $target.FolderPath
+    }
 
     $q = @()
     $d = '"urn:schemas:httpmail:datereceived"'
@@ -66,46 +80,49 @@ try {
         $s = ConvertTo-DaslText $From
         $q += "(""urn:schemas:httpmail:fromname"" LIKE '%$s%' OR ""$($script:Prop.SenderSmtp)"" LIKE '%$s%')"
     }
-    $table = if ($q.Count) { $target.GetTable("@SQL=" + ($q -join " AND ")) } else { $target.GetTable() }
-    $table.Columns.RemoveAll()
-    $cols = @($script:Prop.LongTermEntryID, "Subject", "SenderName", $script:Prop.SenderSmtp, "ReceivedTime",
+    $cols =@($script:Prop.LongTermEntryID, "Subject", "SenderName", $script:Prop.SenderSmtp, "ReceivedTime",
         $script:Prop.MessageFlags, "Categories", $LastVerb, $script:CopilotProp.Score, $script:CopilotProp.Headline,
         $script:Prop.ConversationID)
-    foreach ($c in $cols) { [void]$table.Columns.Add($c) }
-    $table.Sort("ReceivedTime", $true)
-    $rowCount = $table.GetRowCount()
-    $rows = $null
-    if ($rowCount -gt 0) { $rows = $table.GetArray($rowCount) }
 
     $list = New-Object System.Collections.Generic.List[object]
-    for ($i = 0; $i -lt $rowCount; $i++) {
-        $tags = @(Split-List ([string]$rows[$i, 6]))
-        if ($wantTags.Count -and -not ($tags | Where-Object { $_ -in $wantTags })) { continue }
-        $prio = ConvertTo-CopilotPriority $rows[$i, 8]
-        $level = if ($prio) { $prio } else { "None" }
-        if ($wantPriority.Count -and $level -notin $wantPriority) { continue }
-        $verb = $rows[$i, 7]; $verb = if ($null -ne $verb) { [int]$verb } else { 0 }
-        $eid = $rows[$i, 0]; $conv = $rows[$i, 10]
-        $name = [string]$rows[$i, 2]; $smtp = [string]$rows[$i, 3]
-        $rec = [ordered]@{
-            EntryID         = $(if ($eid -is [byte[]]) { ConvertTo-HexId $eid } else { "" })
-            ConversationID  = $(if ($conv -is [byte[]]) { ConvertTo-HexId $conv } else { "" })
-            CopilotPriority = $prio
-            Date            = [datetime]$rows[$i, 4]
-            From            = $(if ($smtp -and $smtp -ne $name) { "$name <$smtp>" } else { $name })
-            Subject         = [string]$rows[$i, 1]
-            CopilotHeadline = [string]$rows[$i, 9]
-            CopilotReason   = ""
-            Categories      = $tags
-            Unread          = -not ([int]$rows[$i, 5] -band 1)
-            Replied         = $verb -in 102, 103
+    foreach ($target in $folders) {
+        $table = if ($q.Count) { $target.GetTable("@SQL=" + ($q -join " AND ")) } else { $target.GetTable() }
+        $table.Columns.RemoveAll()
+        foreach ($c in $cols) { [void]$table.Columns.Add($c) }
+        $rowCount = $table.GetRowCount()
+        if ($rowCount -eq 0) { continue }
+        $rows = $table.GetArray($rowCount)
+        $folderPath = ($target.FolderPath -replace '^\\\\[^\\]+\\', '') -replace '\\', '/'
+        for ($i = 0; $i -lt $rowCount; $i++) {
+            $tags = @(Split-List ([string]$rows[$i, 6]))
+            if ($wantTags.Count -and -not ($tags | Where-Object { $_ -in $wantTags })) { continue }
+            $prio = ConvertTo-CopilotPriority $rows[$i, 8]
+            $level = if ($prio) { $prio } else { "None" }
+            if ($wantPriority.Count -and $level -notin $wantPriority) { continue }
+            $verb = $rows[$i, 7]; $verb = if ($null -ne $verb) { [int]$verb } else { 0 }
+            $eid = $rows[$i, 0]; $conv = $rows[$i, 10]
+            $name = [string]$rows[$i, 2]; $smtp = [string]$rows[$i, 3]
+            $rec = [ordered]@{
+                EntryID         = $(if ($eid -is [byte[]]) { ConvertTo-HexId $eid } else { "" })
+                ConversationID  = $(if ($conv -is [byte[]]) { ConvertTo-HexId $conv } else { "" })
+                CopilotPriority = $prio
+                Date            = [datetime]$rows[$i, 4]
+                From            = $(if ($smtp -and $smtp -ne $name) { "$name <$smtp>" } else { $name })
+                Subject         = [string]$rows[$i, 1]
+                CopilotHeadline = [string]$rows[$i, 9]
+                CopilotReason   = ""
+                Categories      = $tags
+                Unread          = -not ([int]$rows[$i, 5] -band 1)
+                Replied         = $verb -in 102, 103
+                Folder          = $folderPath
+            }
+            $list.Add($rec)
         }
-        $list.Add($rec)
     }
 
-    # Rank: High, Normal, Low, not scored; the table order (newest first) is kept inside each level.
+    # Rank: High, Normal, Low, not scored; newest first inside each level.
     $rank = @{ "High" = 0; "Normal" = 1; "Low" = 2; "" = 3 }
-    $records = $list.ToArray()
+    $records = @($list.ToArray() | Sort-Object { $_.Date } -Descending)
     $records = @(for ($r = 0; $r -le 3; $r++) { $records | Where-Object { $rank[$_.CopilotPriority] -eq $r } })
     $counts = [ordered]@{
         High   = @($records | Where-Object { $_.CopilotPriority -eq "High" }).Count
@@ -131,12 +148,12 @@ try {
 
     if ($Json) {
         $items = @(foreach ($r in $shown) { ConvertTo-JsonRecord $r })
-        Write-Json ([ordered]@{ folder = $target.FolderPath; filters = $filters; matched = $records.Count; counts = $counts; items = $items })
+        Write-Json ([ordered]@{ folder = $folderLabel; filters = $filters; matched = $records.Count; counts = $counts; items = $items })
         exit 0
     }
 
     Write-Host "=== OUTLOOK PRIORITY (Copilot) ===" -ForegroundColor Cyan
-    Write-Host "Folder: $($target.FolderPath)"
+    Write-Host "Folder: $folderLabel"
     Write-Host "Filters: $($filters -join ' | ')" -ForegroundColor Gray
     Write-Host ""
     $level = $null; $n = 0
@@ -152,6 +169,7 @@ try {
         Write-Host "[$n] $(Format-MailDate $r.Date)  $($state -join ' | ')" -ForegroundColor Cyan
         Write-Host "  Subject: $($r.Subject)" -ForegroundColor Yellow
         Write-Host "  From: $($r.From)"
+        if ($AllFolders) { Write-Host "  Folder: $($r.Folder)" }
         if ($r.CopilotHeadline) { Write-Host "  Copilot: $($r.CopilotHeadline)" -ForegroundColor Magenta }
         if ($r.CopilotReason) { Write-Host "  Why: $($r.CopilotReason)" -ForegroundColor Magenta }
         if ($r.Categories.Count) { Write-Host "  Tags: $($r.Categories -join ', ')" -ForegroundColor Green }
