@@ -20,7 +20,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 | Need | Script | Key parameters |
 |---|---|---|
 | What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -Json` (see Triage) |
-| Mail ranked by Copilot priority | `outlook-priority.ps1` | `-Days 1 -DateFrom -DateTo -All -Unread -Read -Category -Untagged -Priority High,Normal,Low,None -From -Subject -Folder -Limit [-Why] [-Summary] -Json` (see Copilot insights) |
+| Mail ranked by Copilot priority | `outlook-priority.ps1` | `-Days 1 -DateFrom -DateTo -All -Unread -Read -Category -Untagged -Priority High,Normal,Low,None -From -Subject -Folder | -AllFolders -Limit [-Why] [-Summary] -Json` (see Copilot insights) |
 | Copilot's suggested replies | `outlook-smart-reply.ps1` | `-EntryID [-Use 1-3 [-ReplyAll] [-RemoveAutoSignature]]`; list: `-Days 2 -DateFrom -DateTo -UnreadOnly -From -Subject -Folder -Limit -MaxScan -Json` |
 | List / filter emails | `outlook-find.ps1` | `-Folder -Days -DateFrom -DateTo -From -To -Subject -BodyContains [-FastBody] -UnreadOnly -ReadOnly -HasAttachment -Flagged -Importance -Category -Priority High,Normal,Low -Limit -Detailed -Json` |
 | Latest emails | `outlook-read.ps1` | `-Days 1 -Limit 20 -UnreadOnly -Folder -Priority High,Normal,Low` |
@@ -96,7 +96,7 @@ Copilot stores its analysis on each email in Exchange. These scripts read it; th
 | Reason | Copilot's explanation of the priority | emails with a headline |
 | Suggested replies | up to 3 short replies, in Copilot's rank order | about 1 in 4 |
 
-- `outlook-priority.ps1` ranks mail High > Normal > Low > not scored, newest first within each level (default: last 1 day). `-Why` adds the reason, `-Summary` prints counts only.
+- `outlook-priority.ps1` ranks mail High > Normal > Low > not scored, newest first within each level (default: last 1 day). `-Why` adds the reason, `-Summary` prints counts only. `-AllFolders` covers all received mail: the Inbox and every folder rules move mail to (not Sent, Drafts, Deleted Items, Junk, Outbox or system folders); each row then shows its folder. Mail that rules file before it reaches the Inbox is often not scored by Copilot.
 - `outlook-smart-reply.ps1 -EntryID <id>` shows the suggestions. `-Use N` saves a reply draft in the thread with suggestion N as the text (same path as `outlook-reply.ps1 -SmartReply N`). It never sends; use `outlook-send-draft.ps1 -Confirm`.
 - `outlook-read-body.ps1` prints a "Copilot" block (priority, headline, reason, suggestions) and `-Json` carries it as `Copilot`.
 - `outlook-find.ps1` / `outlook-read.ps1` take `-Priority` and show `CopilotPriority` on each row.
