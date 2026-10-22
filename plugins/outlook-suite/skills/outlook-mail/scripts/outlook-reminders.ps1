@@ -31,9 +31,9 @@ try {
         $visible = [bool]$r.IsVisible
         if (-not $listAll -and -not $visible) {
             $next = $null; try { $next = [datetime]$r.NextReminderDate } catch { }
-            # Not due: keep only reminders coming up between now and the horizon (cheap filter
-            # before opening the item; past, not-visible ones are stale).
-            if (-not $next -or $next -lt (Get-Date) -or $next -gt $horizon) { continue }
+            # Not shown as due yet: keep ones that became due in the last 24 h (Outlook may not
+            # have popped them up yet) or come up before the horizon. Older ones are stale.
+            if (-not $next -or $next -lt (Get-Date).AddDays(-1) -or $next -gt $horizon) { continue }
         }
         $o = [ordered]@{ Index = $i; Caption = $r.Caption; Due = $null; NextReminder = $null; Visible = $visible; ItemType = ""; EntryID = "" }
         try { $o.NextReminder = Format-MailDateIso $r.NextReminderDate } catch { }
