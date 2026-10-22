@@ -1,123 +1,45 @@
 param(
     [string]$EntryID = "",
     [int]$Index = 0,
-    [string]$Subject = ""
+    [string]$Subject = "",
+    [switch]$Json
 )
 
-# Outlook Task Complete Script
+# Outlook Task Complete: mark a task complete. A flagged email's EntryID (from
+# outlook-tasks-list.ps1 -Flagged) marks its follow-up flag complete instead.
 # Usage: .\outlook-tasks-complete.ps1 -EntryID "00000000..." (preferred)
-# Usage: .\outlook-tasks-complete.ps1 -Index 1 (fallback)
-# By subject: .\outlook-tasks-complete.ps1 -Subject "Finish report"
+# Usage: .\outlook-tasks-complete.ps1 -Index 1 (position in outlook-tasks-list.ps1 order)
+# By subject: .\outlook-tasks-complete.ps1 -Subject "Finish report" (exact, must be unique)
 
-$Outlook = $null
-$Namespace = $null
-$Tasks = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_tasks.ps1")
 
 try {
-    if (-not $EntryID -and $Index -eq 0 -and -not $Subject) {
-        Write-Host "`nPlease specify -EntryID, -Index, or -Subject to complete a task:" -ForegroundColor Red
-        Write-Host "  -EntryID ""00000000...""" -ForegroundColor Gray
-        Write-Host "  -Index 1" -ForegroundColor Gray
-        Write-Host "  -Subject ""Finish report""" -ForegroundColor Gray
-    } else {
-        # Connect to Outlook - try active instance first
-        try {
-            $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-        } catch {
-            $Outlook = New-Object -ComObject Outlook.Application
-            Start-Sleep -Milliseconds 500
+    $null = Connect-Outlook
+    $item = Resolve-TaskItem -Namespace $Namespace -EntryID $EntryID -Index $Index -Subject $Subject -AllowMail
+
+    if ([int]$item.Class -eq 43) {
+        # Flagged email: complete the flag (olFlagComplete). The email itself is not changed otherwise.
+        if ([int]$item.FlagStatus -eq 1) {
+            if ($Json) { Write-Json ([ordered]@{ Action = "complete"; Result = "already complete"; EntryID = $item.EntryID; Type = "Mail"; Subject = $item.Subject }); exit 0 }
+            Write-Host "Flag is already complete: $($item.Subject)" -ForegroundColor Yellow; exit 0
         }
-
-        $Namespace = $Outlook.GetNamespace("MAPI")
-        $targetTask = $null
-        $taskSubject = ""
-
-        if ($EntryID) {
-            $targetTask = $Namespace.GetItemFromID($EntryID)
-            if (-not $targetTask) {
-                Write-Host "ERROR: Task not found with provided EntryID." -ForegroundColor Red
-                Write-Host "Tip: Use outlook-tasks-list.ps1 to find tasks and get EntryIDs." -ForegroundColor Gray
-            } else {
-                $taskSubject = $targetTask.Subject
-            }
-        } elseif ($Index -gt 0) {
-            $Tasks = $Namespace.GetDefaultFolder(13)  # olFolderTasks = 13
-            $items = $Tasks.Items
-            $items.Sort("[DueDate]")
-
-            # Find by index (only counting non-completed tasks)
-            $count = 0
-            foreach ($task in $items) {
-                if ($task.Status -ne 2) {  # Skip completed
-                    $count++
-                    if ($count -eq $Index) {
-                        $targetTask = $task
-                        $taskSubject = $task.Subject
-                        break
-                    }
-                }
-            }
-
-            if (-not $targetTask) {
-                Write-Host "`nTask at index $Index not found." -ForegroundColor Red
-                Write-Host "Use outlook-tasks-list.ps1 to see available tasks." -ForegroundColor Gray
-            }
-        } elseif ($Subject) {
-            $Tasks = $Namespace.GetDefaultFolder(13)  # olFolderTasks = 13
-            $items = $Tasks.Items
-            $items.Sort("[DueDate]")
-
-            $exactMatchCount = 0
-            foreach ($task in $items) {
-                if ($task.Subject -and $task.Subject -eq $Subject) {
-                    $exactMatchCount++
-                    if ($exactMatchCount -eq 1) {
-                        $targetTask = $task
-                        $taskSubject = $task.Subject
-                    }
-                }
-            }
-
-            if ($exactMatchCount -eq 0) {
-                Write-Host "`nTask '$Subject' not found." -ForegroundColor Red
-            } elseif ($exactMatchCount -gt 1) {
-                $targetTask = $null
-                Write-Host "`nMultiple tasks found with exact subject '$Subject' ($exactMatchCount matches)." -ForegroundColor Red
-                Write-Host "Use -EntryID or -Index to target a single task." -ForegroundColor Gray
-                Write-Host "Tip: Run outlook-tasks-list.ps1 to find the correct task." -ForegroundColor Gray
-            }
-        }
-
-        if ($targetTask) {
-            # Check if already completed
-            if ($targetTask.Status -eq 2) {
-                Write-Host "`nTask is already completed." -ForegroundColor Yellow
-                Write-Host "Subject: $taskSubject" -ForegroundColor Gray
-            } else {
-                # Mark as complete
-                $targetTask.MarkComplete()
-
-                Write-Host "`n=== TASK COMPLETED ===" -ForegroundColor Green
-                Write-Host "Subject: $taskSubject" -ForegroundColor Yellow
-                Write-Host "Status: Completed" -ForegroundColor Gray
-                Write-Host "Completed: $((Get-Date).ToString('g'))" -ForegroundColor Gray
-            }
-        }
+        $item.FlagStatus = 1
+        $item.Save()
+        if ($Json) { Write-Json ([ordered]@{ Action = "complete"; Result = "flag completed"; EntryID = $item.EntryID; Type = "Mail"; Subject = $item.Subject }); exit 0 }
+        Write-Host "=== EMAIL FLAG COMPLETED ===" -ForegroundColor Green
+        Write-Host "  EntryID: $($item.EntryID)"
+        Write-Host "  Subject: $($item.Subject)" -ForegroundColor Yellow
+        exit 0
     }
+
+    if ($item.Complete) {
+        Write-TaskResult -Title "TASK ALREADY COMPLETED" -Task $item -Json:$Json -Action "complete"
+        exit 0
+    }
+    $item.MarkComplete()
+    Write-TaskResult -Title "TASK COMPLETED" -Task $item -Json:$Json -Action "complete"
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Tasks) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Tasks) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

@@ -1,106 +1,46 @@
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$FullName,
 
     [string]$Email = "",
+    [string]$Email2 = "",
     [string]$Phone = "",
     [string]$Mobile = "",
     [string]$HomePhone = "",
     [string]$Company = "",
     [string]$JobTitle = "",
-    [string]$Notes = ""
+    [string]$Department = "",
+    [string]$Office = "",
+    [string]$Categories = "",
+    [string]$Notes = "",
+    [switch]$Json
 )
 
-# Outlook Contact Create Script
+# Outlook Contact Create: a new contact in the default Contacts folder.
 # Usage: .\outlook-contacts-create.ps1 -FullName "John Doe"
-# Full: .\outlook-contacts-create.ps1 -FullName "John Doe" -Email "john@example.com" -Phone "555-1234" -Company "Acme Inc" -JobTitle "Manager"
+# Usage: .\outlook-contacts-create.ps1 -FullName "John Doe" -Email "john@example.com" -Phone "555-1234" -Company "Acme Inc" -JobTitle "Manager" -Json
 
-$Outlook = $null
-$contact = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_people.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
-
-    # Create contact item (olContactItem = 2)
-    $contact = $Outlook.CreateItem(2)
-
+    $null = Connect-Outlook
+    $contact = $Outlook.CreateItem(2)   # olContactItem
     $contact.FullName = $FullName
-
-    if ($Email) {
-        $contact.Email1Address = $Email
-    }
-
-    if ($Phone) {
-        $contact.BusinessTelephoneNumber = $Phone
-    }
-
-    if ($Mobile) {
-        $contact.MobileTelephoneNumber = $Mobile
-    }
-
-    if ($HomePhone) {
-        $contact.HomeTelephoneNumber = $HomePhone
-    }
-
-    if ($Company) {
-        $contact.CompanyName = $Company
-    }
-
-    if ($JobTitle) {
-        $contact.JobTitle = $JobTitle
-    }
-
-    if ($Notes) {
-        $contact.Body = $Notes
-    }
-
+    if ($Email) { $contact.Email1Address = $Email }
+    if ($Email2) { $contact.Email2Address = $Email2 }
+    if ($Phone) { $contact.BusinessTelephoneNumber = $Phone }
+    if ($Mobile) { $contact.MobileTelephoneNumber = $Mobile }
+    if ($HomePhone) { $contact.HomeTelephoneNumber = $HomePhone }
+    if ($Company) { $contact.CompanyName = $Company }
+    if ($JobTitle) { $contact.JobTitle = $JobTitle }
+    if ($Department) { $contact.Department = $Department }
+    if ($Office) { $contact.OfficeLocation = $Office }
+    if ($Categories) { $contact.Categories = $Categories }
+    if ($Notes) { $contact.Body = $Notes }
     $contact.Save()
-
-    Write-Host "`n=== CONTACT CREATED ===" -ForegroundColor Green
-    Write-Host "Name: $FullName" -ForegroundColor Yellow
-
-    if ($Email) {
-        Write-Host "Email: $Email" -ForegroundColor Gray
-    }
-
-    if ($Phone) {
-        Write-Host "Work Phone: $Phone" -ForegroundColor Gray
-    }
-
-    if ($Mobile) {
-        Write-Host "Mobile: $Mobile" -ForegroundColor Gray
-    }
-
-    if ($HomePhone) {
-        Write-Host "Home Phone: $HomePhone" -ForegroundColor Gray
-    }
-
-    if ($Company) {
-        if ($JobTitle) {
-            Write-Host "Company: $JobTitle at $Company" -ForegroundColor Gray
-        } else {
-            Write-Host "Company: $Company" -ForegroundColor Gray
-        }
-    }
-
-    Write-Host "`nContact saved to Contacts folder." -ForegroundColor Cyan
+    Write-ContactResult -Title "CONTACT CREATED" -Rec (ConvertTo-ContactRecord $contact) -Action "create" -Json:$Json
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($contact) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($contact) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

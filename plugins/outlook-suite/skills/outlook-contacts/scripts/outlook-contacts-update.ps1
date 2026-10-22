@@ -2,177 +2,61 @@ param(
     [string]$EntryID = "",
     [int]$Index = 0,
 
-    [string]$FullName = "",
-    [string]$Email = "",
-    [string]$Phone = "",
-    [string]$Mobile = "",
-    [string]$Company = "",
-    [string]$JobTitle = "",
-    [string]$Notes = "",
-    [string]$Search = ""
+    [string]$FullName,
+    [string]$Email,
+    [string]$Email2,
+    [string]$Phone,
+    [string]$Mobile,
+    [string]$HomePhone,
+    [string]$Company,
+    [string]$JobTitle,
+    [string]$Department,
+    [string]$Office,
+    [string]$Categories,
+    [string]$Notes,
+    [string]$Search = "",
+    [switch]$Json
 )
 
-# Outlook Contact Update Script
-# Usage: .\outlook-contacts-update.ps1 -EntryID "00000000..." -Email "newemail@example.com" (preferred)
-# Usage: .\outlook-contacts-update.ps1 -Index 1 -Email "newemail@example.com" (fallback)
-# Update multiple: .\outlook-contacts-update.ps1 -EntryID "00000000..." -Phone "555-9999" -Company "New Corp"
-# With search filter: .\outlook-contacts-update.ps1 -Index 1 -Search "John" -JobTitle "Director"
+# Outlook Contact Update: change fields of one contact. Only the fields you pass change;
+# pass "" to clear one.
+# Usage: .\outlook-contacts-update.ps1 -EntryID "00000000..." -Email "newemail@example.com"
+# Usage: .\outlook-contacts-update.ps1 -Index 1 -Search "John" -JobTitle "Director" -Json
 
-$Outlook = $null
-$Namespace = $null
-$Contacts = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_people.ps1")
+
+# parameter -> ContactItem property
+$fields = [ordered]@{
+    FullName = "FullName"; Email = "Email1Address"; Email2 = "Email2Address"; Phone = "BusinessTelephoneNumber"
+    Mobile = "MobileTelephoneNumber"; HomePhone = "HomeTelephoneNumber"; Company = "CompanyName"; JobTitle = "JobTitle"
+    Department = "Department"; Office = "OfficeLocation"; Categories = "Categories"; Notes = "Body"
+}
+
+$given = @($fields.Keys | Where-Object { $PSBoundParameters.ContainsKey($_) })
+if ($given.Count -eq 0) {
+    Stop-WithError "No changes given." -Hint "Pass at least one field, e.g. -Email, -Phone, -Mobile, -Company, -JobTitle, -Department, -Notes."
+}
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
+    $null = Connect-Outlook
+    $contact = Get-ContactTarget -Namespace $Namespace -EntryID $EntryID -Index $Index -Search $Search
+    $changes = [ordered]@{}
+    foreach ($p in $given) {
+        $prop = $fields[$p]
+        $new = [string]$PSBoundParameters[$p]
+        if ($p -eq "Notes") {
+            $contact.Body = $new
+            $changes["Notes"] = $(if ($new) { "updated" } else { "cleared" })
+            continue
+        }
+        $old = [string]$contact.$prop
+        $contact.$prop = $new
+        $changes[$p] = "'$old' -> '$new'"
     }
-
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetContact = $null
-
-    if ($EntryID) {
-        $targetContact = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetContact) {
-            Write-Host "ERROR: Contact not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-contacts-list.ps1 to find contacts and get EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        $Contacts = $Namespace.GetDefaultFolder(10)  # olFolderContacts = 10
-        $items = $Contacts.Items
-        $items.Sort("[LastName]")
-
-        # Build filtered list if search is provided
-        $filteredContacts = @()
-        foreach ($contact in $items) {
-            if ($Search) {
-                $searchLower = $Search.ToLower()
-                $matchFound = $false
-
-                if ($contact.FullName -and $contact.FullName.ToLower().Contains($searchLower)) {
-                    $matchFound = $true
-                }
-                if ($contact.Email1Address -and $contact.Email1Address.ToLower().Contains($searchLower)) {
-                    $matchFound = $true
-                }
-                if ($contact.CompanyName -and $contact.CompanyName.ToLower().Contains($searchLower)) {
-                    $matchFound = $true
-                }
-
-                if (-not $matchFound) {
-                    continue
-                }
-            }
-            $filteredContacts += $contact
-        }
-
-        if ($Index -lt 1 -or $Index -gt $filteredContacts.Count) {
-            Write-Host "`nContact at index $Index not found." -ForegroundColor Red
-            if ($Search) {
-                Write-Host "Use outlook-contacts-list.ps1 -Search '$Search' to see available contacts." -ForegroundColor Gray
-            } else {
-                Write-Host "Use outlook-contacts-list.ps1 to see available contacts." -ForegroundColor Gray
-            }
-        } else {
-            $targetContact = $filteredContacts[$Index - 1]
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target a contact." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-contacts-update.ps1 -EntryID ""00000000..."" -Email ""newemail@example.com""" -ForegroundColor Gray
-    }
-
-    if ($targetContact) {
-        # Track changes
-        $changes = @()
-
-        if ($PSBoundParameters.ContainsKey("FullName")) {
-            $oldValue = $targetContact.FullName
-            $targetContact.FullName = $FullName
-            $changes += "Name: '$oldValue' -> '$FullName'"
-        }
-
-        if ($PSBoundParameters.ContainsKey("Email")) {
-            $oldValue = $targetContact.Email1Address
-            $targetContact.Email1Address = $Email
-            $changes += "Email: '$oldValue' -> '$Email'"
-        }
-
-        if ($PSBoundParameters.ContainsKey("Phone")) {
-            $oldValue = $targetContact.BusinessTelephoneNumber
-            $targetContact.BusinessTelephoneNumber = $Phone
-            $changes += "Work Phone: '$oldValue' -> '$Phone'"
-        }
-
-        if ($PSBoundParameters.ContainsKey("Mobile")) {
-            $oldValue = $targetContact.MobileTelephoneNumber
-            $targetContact.MobileTelephoneNumber = $Mobile
-            $changes += "Mobile: '$oldValue' -> '$Mobile'"
-        }
-
-        if ($PSBoundParameters.ContainsKey("Company")) {
-            $oldValue = $targetContact.CompanyName
-            $targetContact.CompanyName = $Company
-            $changes += "Company: '$oldValue' -> '$Company'"
-        }
-
-        if ($PSBoundParameters.ContainsKey("JobTitle")) {
-            $oldValue = $targetContact.JobTitle
-            $targetContact.JobTitle = $JobTitle
-            $changes += "Job Title: '$oldValue' -> '$JobTitle'"
-        }
-
-        if ($PSBoundParameters.ContainsKey("Notes")) {
-            $targetContact.Body = $Notes
-            if ([string]::IsNullOrEmpty($Notes)) {
-                $changes += "Notes cleared"
-            } else {
-                $changes += "Notes updated"
-            }
-        }
-
-        if ($changes.Count -eq 0) {
-            Write-Host "`nNo changes specified. Use parameters like -FullName, -Email, -Phone, etc." -ForegroundColor Yellow
-        } else {
-            $targetContact.Save()
-
-            Write-Host "`n=== CONTACT UPDATED ===" -ForegroundColor Green
-            Write-Host "Name: $($targetContact.FullName)" -ForegroundColor Yellow
-
-            if ($targetContact.Email1Address) {
-                Write-Host "Email: $($targetContact.Email1Address)" -ForegroundColor Gray
-            }
-
-            if ($targetContact.CompanyName) {
-                if ($targetContact.JobTitle) {
-                    Write-Host "Company: $($targetContact.JobTitle) at $($targetContact.CompanyName)" -ForegroundColor Gray
-                } else {
-                    Write-Host "Company: $($targetContact.CompanyName)" -ForegroundColor Gray
-                }
-            }
-
-            Write-Host "`nChanges made:" -ForegroundColor Cyan
-            foreach ($change in $changes) {
-                Write-Host "  - $change" -ForegroundColor Gray
-            }
-        }
-    }
+    $contact.Save()
+    Write-ContactResult -Title "CONTACT UPDATED" -Rec (ConvertTo-ContactRecord $contact) -Changes $changes -Action "update" -Json:$Json
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Contacts) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Contacts) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

@@ -27,7 +27,7 @@ try {
     $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days -Folder "Sent" -DateProperty "SentOn"
 
     if ($DeleteUnread) {
-        if (-not (Confirm-ItemAction -Action "delete" -Title "DELETE FROM SENT ITEMS (not a recall)" -Item $email -Confirmed $Confirm -What "the delete from Sent Items")) { exit 0 }
+        if ((Confirm-ItemAction -Action "delete" -Title "DELETE FROM SENT ITEMS (not a recall)" -Item $email -Confirmed $Confirm -What "the delete from Sent Items") -ne $true) { exit 0 }
         $rec = ConvertTo-MailRecord $email
         $email.Delete()
         if ($Json) { Write-Json ([ordered]@{ Action = "recall"; Result = "deleted from Sent Items"; EntryID = $rec.EntryID; Subject = $rec.Subject }); exit 0 }

@@ -28,6 +28,10 @@ function Child($parent, $name) { foreach ($c in $parent.Folders) { if ($c.Name -
 $drafts = $Namespace.GetDefaultFolder(16); $deleted = $Namespace.GetDefaultFolder(3)
 $marker = "suite-test-marker"
 $ids = @()
+# Force the confirm gate on for the whole run, whatever the user's config says, and restore it after.
+$prevGate = $env:OUTLOOK_SUITE_REQUIRE_CONFIRM
+$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "1"
+
 try {
     # Bring the test folder back, or create it.
     $parked = Child $deleted "_suite-fold"
@@ -84,6 +88,7 @@ try {
     Check "folder action on a missing folder exits 1" ($r.Exit -eq 1)
 }
 finally {
+    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = $prevGate
     $q = "@SQL=""urn:schemas:httpmail:textdescription"" LIKE '%$marker%' OR ""urn:schemas:httpmail:subject"" LIKE '[suite-test]%'"
     foreach ($pass in 1, 2) {
         $folders = @($drafts, $deleted)

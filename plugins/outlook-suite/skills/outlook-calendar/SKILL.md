@@ -1,314 +1,133 @@
 ---
 name: outlook-calendar
-description: "Manage Outlook calendar via PowerShell: list events, create/update/delete appointments, send meeting invites, respond to meetings, recurring events, check availability, and find rooms. Scripts auto-start Outlook when needed."
+description: "Manage the classic Outlook calendar on Windows through PowerShell COM: find free meeting times (alone or with other people, ranked open day > holds-only day > one-meeting day > busy day, 2-meeting daily cap, proposed as email-ready lines or HTML), week overview, list events tagged meeting / hold / firm (classes, office hours, travel: never booked over) / all-day with conflicts, create holds and meetings, turn a hold into an invite, update, delete (one occurrence or a series), respond to invitations, cancel with notice, read-only meeting prep (people, mail history, related mail, agenda, join link), attendees and responses, recurring series, free/busy grid, rooms. Fast (one range read per call), agent-friendly (EntryIDs, -Json, exit codes), with a confirm switch on everything that sends or deletes."
 ---
 
 # Outlook Calendar
 
-Manage Microsoft Outlook calendar events and meetings using PowerShell COM objects.
+15 PowerShell scripts in `scripts/` that drive classic Outlook (running on this Windows PC) through COM. They share the mail skill's helpers (`scripts/_common.ps1` loads them) plus `scripts/_calendar.ps1`. Every script works standalone (`pwsh -File scripts/<name>.ps1 ...`) and under Windows PowerShell 5.1; through the warm host (`outlook-mail/scripts/outlook-call.ps1 calendar-list -Days 7`) repeated calls are faster.
 
-## Prerequisites
+## How to work
 
-- Microsoft Outlook installed (scripts auto-start Outlook if it's not already running)
-- PowerShell 5.1+ (included in Windows 10/11)
-- Some features (rooms, free/busy) require Exchange/Office 365
+1. **Look before booking.** `outlook-calendar-week.ps1` shows what the week holds; `outlook-calendar-free.ps1` proposes slots, already ranked. Never answer "there is no time": the finder fills from the best tier down and, if nothing fits, says what to widen.
+2. **Find first, then act by EntryID.** `outlook-calendar-list.ps1` (or `-Detail` on week) prints an `EntryID` for every event. `-Index` still works but positions shift; do not use it for actions.
+3. **Series:** every occurrence of a recurring event carries the series' EntryID. To act on one occurrence, add `-OccurrenceStart "yyyy-MM-dd HH:mm"` (the Start the list printed). Without it, update and delete act on the whole series; the delete preview says "ENTIRE SERIES".
+4. **Output contract:** success exits 0; failure prints `Error: <reason>` and exits 1. A gated action without confirmation prints `PREVIEW ONLY: ... was NOT done.`, changes nothing, and exits 0.
+5. **Ask before anything that reaches other people** (invites, updates to attendees, responses, forwards) or deletes. When the user already said to go ahead, pass `-Confirm`. Creating or changing the user's own holds needs no confirmation.
 
-## Events and Appointments
+## Meetings, holds, all-day
 
-List, create, update, and delete calendar events.
+Every event has `Kind`:
 
-### outlook-calendar-list.ps1
+| Kind | Meaning |
+|---|---|
+| `meeting` | other people are invited (a 1:1 the user organizes with one invitee is a meeting) |
+| `hold` | no one else is invited: the user's own placeholder (Focus block, Planning, Prep block, Lunch, TODOs). Holds may be booked over when needed. |
+| `firm` | no one else is invited, but it is a commitment and is never booked over: classes (course codes like `ABC-1234-A`, "Class"), office hours, exams, travel, flights, time shown as Out of Office, private events |
+| `allday` | all-day event; one shown as Out of Office or Busy makes the day "Away" |
 
-List upcoming calendar events with EntryIDs for use with action scripts.
+`Blocking` = takes time (Tentative, Busy, Out of Office) and is not cancelled or declined. Conflicts are flagged between overlapping meetings and firm events; holds never conflict.
 
-**Required Parameters:** None (uses defaults)
+Firm subjects are regex patterns (case-sensitive; prefix `(?i)` to ignore case). Replace the defaults with `-FirmHolds "pattern1","pattern2"` on list, week and free, or for good in `%APPDATA%\outlook-suite\config.json`: `{ "calendar": { "firmHolds": ["^[A-Z]{2,4}[- ]?\\d{3,4}\\b", "(?i)office hours"] } }`.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-Days` | int | 7 | Number of days to look ahead (or ahead+behind with -Past) |
-| `-Past` | switch | false | Include past events (shows -Days before and after today) |
-| `-Limit` | int | 20 | Maximum number of events to display |
+## Which script when
 
-```powershell
-# List upcoming events (next 7 days)
-& "./scripts/outlook-calendar-list.ps1" -Days 7
+| Need | Script | Key parameters |
+|---|---|---|
+| Find a meeting time | `outlook-calendar-free.ps1` | `-Attendees "Jane Doe; john.doe@example.org" -Duration 30 -From -To \| -Days 7 -WorkStart 9 -WorkEnd "5 PM" -Step 30 -Buffer 0 -MaxPerDay 2 -PerDay 2 -Top 12 -IncludeWeekends -FirmHolds -TimeZone -Json` |
+| Email-ready time options | `outlook-calendar-free.ps1 -Propose` | `-Count 3 [-Html] [-TimeZone Pacific] [-Json]` plus the finder's parameters |
+| What does the week look like | `outlook-calendar-week.ps1` | `-From <date> \| -Next -Weeks 1 -MaxPerDay 2 -IncludeWeekends -Detail -FirmHolds -Json` |
+| List events | `outlook-calendar-list.ps1` | `-Days 7 \| -Past \| -From -To, -Kind meeting\|hold\|firm\|allday -ConflictsOnly -FirmHolds -TimeZone -Limit 20 -Json` |
+| New hold or meeting | `outlook-calendar-create.ps1` | `-Subject -Start (-End \| -Duration) -AllDay -Location -Body -BusyStatus Free\|Tentative\|Busy\|OutOfOffice\|WorkingElsewhere -Categories -Reminder 15 \| -NoReminder`; meeting: `-Attendees -Optional -Confirm` |
+| Prepare for a meeting (read-only) | `outlook-calendar-prep.ps1` | `-Next \| -EntryID [-OccurrenceStart]`, `-Days 90 -MaxAttendees 25 -Related 10 -TimeZone -Json` |
+| Cancel a meeting the user organizes, notify everyone | `outlook-calendar-cancel.ps1` | `-EntryID [-OccurrenceStart] [-Message "..."] -Confirm` |
+| Turn a hold into an invite | `outlook-calendar-hold-to-invite.ps1` | `-EntryID -Attendees [-Optional -Subject -Location -Body] -Confirm` |
+| Change an event | `outlook-calendar-update.ps1` | `-EntryID [-OccurrenceStart] -Subject -Start -End -Location -Body -BusyStatus -Categories -Reminder \| -NoReminder [-SendUpdate -Confirm]` |
+| Delete | `outlook-calendar-delete.ps1` | `-EntryID [-OccurrenceStart] -Confirm` |
+| Accept / tentative / decline | `outlook-calendar-respond.ps1` | `-EntryID [-OccurrenceStart] -Response Accept\|Tentative\|Decline [-NoResponse] -Confirm` |
+| Who is invited, who answered | `outlook-calendar-attendees.ps1` | `-EntryID [-OccurrenceStart] -Json` |
+| Forward an event | `outlook-calendar-forward.ps1` | `-EntryID -To [-Body]` (draft) or `-Send -Confirm` |
+| Recurring hold or meeting series | `outlook-calendar-recurring.ps1` | `-Subject -Start -Pattern Daily\|Weekly\|Monthly\|Yearly -Interval -Duration -Monday..-Sunday -DayOfMonth -WeekNumber -DayOfWeek -Occurrences \| -EndByDate -BusyStatus -Categories -NoReminder`; meeting: `-Attendees -Confirm` |
+| Free/busy grid for people | `outlook-freebusy.ps1` | `-Attendees -Start [-End] -IntervalMinutes 30 -Json` |
+| Free rooms | `outlook-calendar-rooms.ps1` | `-Start [-End \| -Duration 60] -Building -Limit -Json` |
 
-# List events including past
-& "./scripts/outlook-calendar-list.ps1" -Days 7 -Past
+## Finding a time (`outlook-calendar-free.ps1`)
 
-# List next 30 days, max 50 events
-& "./scripts/outlook-calendar-list.ps1" -Days 30 -Limit 50
-```
+The scheduling rule, built in:
 
-### outlook-calendar-create.ps1
+1. It summarizes the whole week first (Monday to Friday around the range): meetings, holds and firm events per day, all-day events, away days, days over the cap, conflicts.
+2. Each day gets a tier, and slots are offered best tier first:
+   - **Open day**: no meetings and no holds.
+   - **Holds-only day**: no meetings, only holds and firm events; the slot may cover a hold (named in the output), never a firm event.
+   - **One-meeting day**: one meeting booked, so the new one is the second, the daily maximum.
+   - **Busy day**: the cap (`-MaxPerDay`, default 2) is already reached. Offered only when no better day has room, and labeled.
+3. Within a day, slots covering the fewest holds and no tentative attendees come first; picks are spread at least 2 hours apart.
+4. Other people come from Exchange free/busy (names resolve through the contacts skill's people search when it is installed, otherwise Outlook's resolver). Busy or Out of Office blocks; tentative is allowed and noted. An ambiguous or unknown name is reported, never guessed. Anyone whose free/busy could not be read (unresolved, not shared, or no data that far ahead) is listed as **NOT CHECKED** in the header and on each slot: tell the user those times were not checked against that person.
+5. Meetings and firm events block; holds do not. Away days (all-day Out of Office or Busy) get no slots. Today starts at the next step after now, never in the past; a `-From` in the past starts today.
+6. If nothing fits, the search widens by a week (twice at most) and then lists each skipped day with its reason and the options to try. It never just says there is no time.
 
-Create a new appointment or meeting with attendees.
+**`-Propose`** prints the best `-Count` slots (default 3, best tier first, different days first) as email-ready lines in a plain email style, e.g. `Mon, Oct 26, 10:30 to 11:30 a.m.` (always "to", never a dash). `-Html` prints the same as one Outlook-native block (`<div>` in Aptos 11pt black, `class="elementToProof"`, a `<ul>` of slots) to paste into a draft's HTML. `-Json` returns the slots with `Text`, plus `Html`.
 
-**Required Parameters:** `-Subject`, `-Start`
+**`-TimeZone`** (list, free, propose) changes only how times are SHOWN: `Eastern`, `Central`, `Mountain`, `Pacific`, `UTC`, a Windows id (`Pacific Standard Time`) or an IANA name (`America/Los_Angeles`). Text lines carry the zone name; JSON adds `StartShown`/`EndShown` with that zone's offset next to the original `Start`/`End`.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-Subject` | string | — | Event subject/title (required) |
-| `-Start` | datetime | — | Start date and time (required) |
-| `-End` | datetime | Start+1hr | End date and time |
-| `-Location` | string | "" | Event location |
-| `-Body` | string | "" | Event description/body text |
-| `-AllDay` | switch | false | Create as all-day event |
-| `-Reminder` | int | 15 | Reminder minutes before event |
-| `-Attendees` | string | "" | Semicolon-separated email addresses (sends invites) |
-
-```powershell
-# Create a simple appointment
-& "./scripts/outlook-calendar-create.ps1" -Subject "Team Sync" -Start "2026-02-10 14:00"
-
-# Create meeting with attendees (sends invites)
-& "./scripts/outlook-calendar-create.ps1" -Subject "Project Review" -Start "2026-02-10 10:00" -End "2026-02-10 11:30" -Location "Conference Room A" -Attendees "john@example.com; jane@example.com"
-
-# Create all-day event
-& "./scripts/outlook-calendar-create.ps1" -Subject "Company Holiday" -Start "2026-02-15" -AllDay
-```
-
-### outlook-calendar-update.ps1
-
-Update an existing calendar event's details.
-
-**Required Parameters:** `-EntryID` or `-Index` (at least one)
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-EntryID` | string | "" | Outlook EntryID for direct lookup (preferred) |
-| `-Index` | int | 0 | Event position in upcoming list (fallback) |
-| `-Days` | int | 7 | Days ahead to search when using -Index |
-| `-Subject` | string | "" | New subject/title |
-| `-Start` | datetime | — | New start time (adjusts end to maintain duration) |
-| `-End` | datetime | — | New end time |
-| `-Location` | string | "" | New location |
-| `-Body` | string | "" | New body text |
+Present the result to the user grouped under the tier names, then book with `outlook-calendar-create.ps1` (a hold) or, with attendees, after they pick a slot, with `-Confirm`.
 
 ```powershell
-# Update event by EntryID (preferred)
-& "./scripts/outlook-calendar-update.ps1" -EntryID "00000000..." -Subject "Updated Meeting" -Location "Room 202"
-
-# Update event by index (fallback)
-& "./scripts/outlook-calendar-update.ps1" -Index 1 -Subject "New Title"
-
-# Reschedule event
-& "./scripts/outlook-calendar-update.ps1" -EntryID "00000000..." -Start "2026-02-10 14:00"
+& "./scripts/outlook-calendar-free.ps1" -Attendees "Jane Doe; john@example.com" -Duration 60
+& "./scripts/outlook-calendar-free.ps1" -From "2026-11-02" -To "2026-11-06" -Duration 45 -Buffer 15
+& "./scripts/outlook-calendar-week.ps1" -Next -Detail
 ```
 
-### outlook-calendar-delete.ps1
+## Meeting prep (`outlook-calendar-prep.ps1`)
 
-Delete a calendar event or meeting.
+Read-only brief for one meeting (`-Next` picks the user's next real meeting: other people invited, not cancelled, not declined), in about 2 to 3 s:
 
-**Required Parameters:** `-EntryID` or `-Index` (at least one)
+- **Invite**: when, where, organizer, the join link (Teams, Zoom, Meet, Webex) and the agenda, which is the invite's own text with the Teams/Zoom boilerplate and links removed.
+- **People**: everyone invited except the user (the organizer too, when it is someone else), with title, department and office from the directory, their response, and the mail exchanged in the last `-Days`: received from them (every received folder, matched by address), sent to them (Sent Items), and the last date. Sent counts match the person's display name in the To/CC line, so two people with the same name can overcount.
+- **Related mail**: messages whose subjects share at least two keywords with the meeting subject (one if the subject has only one), with subject, date and sender or recipients only. Bodies are never read.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-EntryID` | string | "" | Outlook EntryID for direct lookup (preferred) |
-| `-Index` | int | 0 | Event position in upcoming list (fallback) |
-| `-Days` | int | 7 | Days ahead to search when using -Index |
+## Cancelling (`outlook-calendar-cancel.ps1`)
 
-Supports PowerShell safety switches: `-WhatIf` and `-Confirm`.
+Only for meetings the user organizes: it marks the meeting cancelled and sends the cancellation to every attendee (Outlook's "Cancel meeting"), with `-Message` at the top of the notice, then removes the user's copy. A series EntryID cancels the whole series (the preview says "ENTIRE SERIES"); `-OccurrenceStart` cancels one occurrence. Gated: without `-Confirm` it previews who would be notified and changes nothing. For a meeting someone else organized, decline with `outlook-calendar-respond.ps1`; for a hold, use `outlook-calendar-delete.ps1`.
+
+## Examples
 
 ```powershell
-# Delete by EntryID (preferred)
-& "./scripts/outlook-calendar-delete.ps1" -EntryID "00000000..."
+# Events of the next two weeks, meetings only, as JSON
+& "./scripts/outlook-calendar-list.ps1" -Days 14 -Kind meeting -Json
 
-# Delete by index (fallback)
-& "./scripts/outlook-calendar-delete.ps1" -Index 1
+# A tentative hold without reminder
+& "./scripts/outlook-calendar-create.ps1" -Subject "Backup slot" -Start "2026-10-28 17:00" -Duration 30 -BusyStatus Tentative -NoReminder
 
-# Delete event in wider range
-& "./scripts/outlook-calendar-delete.ps1" -Index 3 -Days 14
+# Turn that hold into a Zoom meeting (preview first, then -Confirm)
+& "./scripts/outlook-calendar-hold-to-invite.ps1" -EntryID "00000000..." -Attendees "jane@example.com" -Location "Zoom"
+
+# Move one occurrence of a series by an hour
+& "./scripts/outlook-calendar-update.ps1" -EntryID "00000000..." -OccurrenceStart "2026-11-03 09:00" -Start "2026-11-03 10:00"
+
+# Decline one occurrence and tell the organizer
+& "./scripts/outlook-calendar-respond.ps1" -EntryID "00000000..." -OccurrenceStart "2026-11-03 09:00" -Response Decline -Confirm
 ```
 
-## Meetings and Responses
+## Confirmation
 
-Respond to meeting invitations, view attendee responses, and forward events.
+Sending invitations (create or recurring with attendees, hold-to-invite), `-SendUpdate`, cancelling, forwarding with `-Send`, responding and deleting are gated: without `-Confirm` they print a preview and do nothing. The gate is shared with the mail skill (actions `send`, `respond`, `delete`); see the mail skill's Confirmation section for turning it off per shell (`OUTLOOK_SUITE_REQUIRE_CONFIRM=0`) or per user (`%APPDATA%\outlook-suite\config.json`).
 
-### outlook-calendar-respond.ps1
+With `-Json`, an unconfirmed action prints one JSON object with `"Result": "preview"` and `"Done": false`.
 
-Accept, tentatively accept, or decline a meeting invitation.
+**Changed in 3.0 (was immediate before):** create and recurring with `-Attendees`, `outlook-calendar-respond.ps1`, and `outlook-calendar-forward.ps1 -Send` now preview unless `-Confirm`.
 
-**Required Parameters:** `-Response`, plus `-EntryID` or `-Index`
+Notes: deleting a meeting does not notify anyone (decline with `outlook-calendar-respond.ps1` instead). Updating a meeting you organize saves it locally unless you add `-SendUpdate -Confirm`. `respond -NoResponse` changes only the user's copy and never calls Outlook's `Respond()` (Microsoft's documentation is contradictory about whether that call sends by itself): Accept turns a Free or Tentative show-as into Busy, Tentative turns Free or Busy into Tentative (Out of Office and Working Elsewhere are never touched; the preview shows old and new), and Decline removes it from the user's calendar without telling the organizer. Acting on a series EntryID without `-OccurrenceStart` responds for the ENTIRE SERIES, which the preview says.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-EntryID` | string | "" | Outlook EntryID for direct lookup (preferred) |
-| `-Index` | int | 0 | Event position in upcoming list (fallback) |
-| `-Response` | string | — | Response type: Accept, Tentative, or Decline (required) |
-| `-Days` | int | 7 | Days ahead to search when using -Index |
-| `-NoResponse` | switch | false | Save response locally without notifying organizer |
+## Reference
 
-```powershell
-# Accept a meeting (preferred)
-& "./scripts/outlook-calendar-respond.ps1" -EntryID "00000000..." -Response Accept
+| Recurrence | Options |
+|---|---|
+| Daily | `-Interval` |
+| Weekly | `-Monday` .. `-Sunday`, `-Interval` |
+| Monthly | `-DayOfMonth`, or `-WeekNumber First\|Second\|Third\|Fourth\|Last` + `-DayOfWeek` |
+| Yearly | same date, or `-WeekNumber` + `-DayOfWeek` |
 
-# Tentatively accept by index
-& "./scripts/outlook-calendar-respond.ps1" -Index 1 -Response Tentative
+Free/busy characters (JSON `Status`): 0 free, 1 tentative, 2 busy, 3 out of office, 4 working elsewhere. Strings start at midnight of the start date, one character per interval.
 
-# Decline without sending response to organizer
-& "./scripts/outlook-calendar-respond.ps1" -EntryID "00000000..." -Response Decline -NoResponse
-```
-
-### outlook-calendar-attendees.ps1
-
-View meeting attendee list with response status (accepted/declined/tentative).
-
-**Required Parameters:** `-EntryID` or `-Index` (at least one)
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-EntryID` | string | "" | Outlook EntryID for direct lookup (preferred) |
-| `-Index` | int | 0 | Event position in upcoming list (fallback) |
-| `-Days` | int | 7 | Days ahead to search when using -Index |
-
-```powershell
-# View attendees by EntryID (preferred)
-& "./scripts/outlook-calendar-attendees.ps1" -EntryID "00000000..."
-
-# View attendees by index
-& "./scripts/outlook-calendar-attendees.ps1" -Index 1
-
-# Check meeting in wider range
-& "./scripts/outlook-calendar-attendees.ps1" -Index 1 -Days 14
-```
-
-### outlook-calendar-forward.ps1
-
-Forward a calendar event using Outlook `ForwardAsVcal` (vCal-style calendar attachment).
-
-**Required Parameters:** `-To`, plus `-EntryID` or `-Index`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-EntryID` | string | "" | Outlook EntryID for direct lookup (preferred) |
-| `-Index` | int | 0 | Event position in upcoming list (fallback) |
-| `-To` | string | — | Recipient email address (required) |
-| `-Body` | string | "" | Custom message to include |
-| `-Days` | int | 7 | Days ahead to search when using -Index |
-| `-Send` | switch | false | Send immediately (default: save as draft) |
-
-```powershell
-# Forward event as draft (preferred)
-& "./scripts/outlook-calendar-forward.ps1" -EntryID "00000000..." -To "colleague@example.com" -Body "FYI"
-
-# Forward and send immediately
-& "./scripts/outlook-calendar-forward.ps1" -EntryID "00000000..." -To "colleague@example.com" -Send
-
-# Forward by index
-& "./scripts/outlook-calendar-forward.ps1" -Index 1 -To "colleague@example.com" -Body "FYI" -Send
-```
-
-## Recurring Events
-
-Create events that repeat on a schedule.
-
-### outlook-calendar-recurring.ps1
-
-Create a recurring calendar event with various recurrence patterns.
-
-**Required Parameters:** `-Subject`, `-Start`, `-Pattern`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-Subject` | string | — | Event subject/title (required) |
-| `-Start` | datetime | — | First occurrence date/time (required) |
-| `-Pattern` | string | — | Recurrence type: Daily, Weekly, Monthly, Yearly (required) |
-| `-Interval` | int | 1 | Repeat every N days/weeks/months/years |
-| `-Duration` | int | 60 | Event duration in minutes |
-| `-Location` | string | "" | Event location |
-| `-Body` | string | "" | Event description |
-| `-Attendees` | string | "" | Semicolon-separated emails (creates meeting series) |
-| `-Occurrences` | int | 0 | End after N occurrences (0 = no limit) |
-| `-EndByDate` | datetime | — | End recurrence on this date |
-| `-Monday` ... `-Sunday` | switch | false | Weekly: which days to recur on |
-| `-DayOfMonth` | int | 0 | Monthly: specific day number (1-31) |
-| `-WeekNumber` | string | "" | Monthly/Yearly: First, Second, Third, Fourth, Last |
-| `-DayOfWeek` | string | "" | Monthly/Yearly: Day, Weekday, WeekendDay, or specific day name |
-
-For monthly "Nth weekday" recurrence, provide `-WeekNumber` and `-DayOfWeek` together.
-
-```powershell
-# Daily standup
-& "./scripts/outlook-calendar-recurring.ps1" -Subject "Daily Standup" -Start "2026-02-10 09:00" -Pattern Daily -Duration 15
-
-# Weekly on specific days
-& "./scripts/outlook-calendar-recurring.ps1" -Subject "Team Meeting" -Start "2026-02-10 10:00" -Pattern Weekly -Monday -Wednesday -Friday
-
-# Monthly on the 15th
-& "./scripts/outlook-calendar-recurring.ps1" -Subject "Monthly Review" -Start "2026-02-10 14:00" -Pattern Monthly -DayOfMonth 15
-
-# Second Tuesday of each month
-& "./scripts/outlook-calendar-recurring.ps1" -Subject "Board Meeting" -Start "2026-02-10 09:00" -Pattern Monthly -WeekNumber Second -DayOfWeek Tuesday
-
-# Limited occurrences
-& "./scripts/outlook-calendar-recurring.ps1" -Subject "Sprint Planning" -Start "2026-02-10 09:00" -Pattern Weekly -Monday -Occurrences 10
-```
-
-## Availability and Rooms
-
-Check attendee availability and find meeting rooms.
-
-### outlook-freebusy.ps1
-
-Check free/busy availability for one or more attendees. Requires Exchange/Office 365.
-
-**Required Parameters:** `-Attendees`, `-Start`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-Attendees` | string | — | Semicolon-separated email addresses (required) |
-| `-Start` | datetime | — | Start of time range to check (required) |
-| `-End` | datetime | Start+8hr | End of time range to check (must be later than `-Start`) |
-| `-IntervalMinutes` | int | 30 | Time slot granularity in minutes (minimum 1) |
-
-```powershell
-# Check one person's availability
-& "./scripts/outlook-freebusy.ps1" -Attendees "john@example.com" -Start "2026-02-10 09:00"
-
-# Check multiple people for a full day
-& "./scripts/outlook-freebusy.ps1" -Attendees "john@example.com; jane@example.com" -Start "2026-02-10 09:00" -End "2026-02-10 17:00"
-
-# Finer 15-minute intervals
-& "./scripts/outlook-freebusy.ps1" -Attendees "john@example.com" -Start "2026-02-10 09:00" -IntervalMinutes 15
-```
-
-### outlook-calendar-rooms.ps1
-
-Find available conference rooms for a time slot. Requires Exchange/Office 365 with room mailboxes.
-
-**Required Parameters:** `-Start`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-Start` | datetime | — | Meeting start time (required) |
-| `-End` | datetime | Start+1hr | Meeting end time (must be later than `-Start`) |
-| `-Building` | string | "" | Filter rooms by building name |
-| `-Capacity` | int | 0 | Currently unsupported in Outlook COM room-list data; accepted but ignored with warning |
-
-```powershell
-# Find available rooms
-& "./scripts/outlook-calendar-rooms.ps1" -Start "2026-02-10 10:00"
-
-# Rooms in specific building
-& "./scripts/outlook-calendar-rooms.ps1" -Start "2026-02-10 10:00" -End "2026-02-10 11:00" -Building "HQ"
-```
-
-## Reference: Recurrence Patterns
-
-| Pattern | Description | Key Options |
-|---------|-------------|-------------|
-| Daily | Every N days | `-Interval` |
-| Weekly | Specific days of week, every N weeks | `-Monday` through `-Sunday`, `-Interval` |
-| Monthly | Specific day or "Nth weekday" of month | `-DayOfMonth` or `-WeekNumber` + `-DayOfWeek` |
-| Yearly | Same date each year or "Nth weekday" of month | `-WeekNumber` + `-DayOfWeek` |
-
-## Reference: Busy Status Values
-
-| Value | Meaning |
-|-------|---------|
-| Free | Time slot is available |
-| Tentative | Tentatively booked |
-| Busy | Confirmed busy |
-| Out of Office | OOF/vacation |
-| Working Elsewhere | Working from another location |
+Rooms come from the organization's "All Rooms" list; Outlook does not expose room capacity.

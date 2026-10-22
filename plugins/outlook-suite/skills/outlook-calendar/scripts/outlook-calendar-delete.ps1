@@ -1,114 +1,41 @@
-[CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact='High')]
 param(
     [string]$EntryID = "",
     [int]$Index = 0,
-
-    [int]$Days = 7
+    [datetime]$OccurrenceStart,
+    [int]$Days = 7,
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Calendar Delete Script
-# Usage: .\outlook-calendar-delete.ps1 -EntryID "00000000..." (preferred)
-# Usage: .\outlook-calendar-delete.ps1 -Index 1 (fallback)
-# Specify date range: .\outlook-calendar-delete.ps1 -Index 3 -Days 14
+# Outlook Calendar Delete: remove an event (moves it to Deleted Items).
+# Irreversible action: previews unless -Confirm. A series EntryID deletes the WHOLE series;
+# add -OccurrenceStart to delete one occurrence only.
+# Deleting a meeting you organize does not notify attendees; deleting one you were invited
+# to does not send a decline. Use outlook-calendar-respond.ps1 -Response Decline for that.
+# Usage: .\outlook-calendar-delete.ps1 -EntryID "00000000..." -Confirm
+# One occurrence: .\outlook-calendar-delete.ps1 -EntryID "00000000..." -OccurrenceStart "2026-02-05 09:00" -Confirm
 
-$Outlook = $null
-$Namespace = $null
-$Calendar = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_calendar.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $occ = $null; if ($PSBoundParameters.ContainsKey("OccurrenceStart")) { $occ = $OccurrenceStart }
+    $item = Get-CalendarItem -Namespace $Namespace -EntryID $EntryID -Index $Index -Days $Days -OccurrenceStart $occ
+    $rec = ConvertTo-EventRecord $item
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetEvent = $null
+    $scope = "this event"
+    if ($rec.Occurrence) { $scope = "this occurrence only" }
+    elseif ($rec.Recurring) { $scope = "the ENTIRE SERIES (every occurrence)" }
+    $details = [ordered]@{ Deletes = $scope }
+    if ($rec.Kind -eq "meeting") { $details.Note = "Attendees and the organizer are not notified." }
+    if ((Confirm-CalendarAction -Action "delete" -Title "DELETE EVENT" -Item $item -Confirmed $Confirm -Details $details -What "the delete" -Json:$Json) -ne $true) { Write-CalendarPreview; exit 0 }
 
-    if ($EntryID) {
-        $targetEvent = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetEvent) {
-            Write-Host "ERROR: Event not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-calendar-list.ps1 to find events and get EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        $Calendar = $Namespace.GetDefaultFolder(9)  # olFolderCalendar = 9
-
-        $items = $Calendar.Items
-        $items.Sort("[Start]")
-        $items.IncludeRecurrences = $true
-
-        # Get events from now to Days ahead (fixed Outlook Restrict format)
-        $now = Get-Date
-        $restrictCulture = [System.Globalization.CultureInfo]::InvariantCulture
-        $startDate = $now.ToString("MM/dd/yyyy HH:mm", $restrictCulture)
-        $endDate = $now.AddDays($Days).ToString("MM/dd/yyyy HH:mm", $restrictCulture)
-
-        $filter = "[Start] >= '$startDate' AND [Start] <= '$endDate'"
-        $events = $items.Restrict($filter)
-
-        $count = 0
-        foreach ($event in $events) {
-            $count++
-            if ($count -eq $Index) {
-                $targetEvent = $event
-                break
-            }
-        }
-
-        if (-not $targetEvent) {
-            Write-Host "`nEvent at index $Index not found in next $Days days." -ForegroundColor Red
-            Write-Host "Use outlook-calendar-list.ps1 -Days $Days to see available events." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an event." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-calendar-delete.ps1 -EntryID ""00000000...""" -ForegroundColor Gray
-    }
-
-    if ($targetEvent) {
-        # Store event info before deleting
-        $subject = $targetEvent.Subject
-        $startTime = $targetEvent.Start
-        $location = $targetEvent.Location
-
-        # Check if it's a meeting with attendees
-        $isMeeting = $targetEvent.MeetingStatus -ne 0
-
-        $targetDescription = "'$subject' on $($startTime.ToString('yyyy-MM-dd HH:mm'))"
-        if ($PSCmdlet.ShouldProcess($targetDescription, "Delete calendar event")) {
-            # Delete the event
-            $targetEvent.Delete()
-
-            Write-Host "`n=== EVENT DELETED ===" -ForegroundColor Green
-            Write-Host "Subject: $subject" -ForegroundColor Yellow
-            Write-Host "Date: $($startTime.ToString('ddd, MMM d, yyyy'))"
-            Write-Host "Time: $($startTime.ToString('h:mm tt'))" -ForegroundColor Gray
-
-            if ($location) {
-                Write-Host "Location: $location" -ForegroundColor Gray
-            }
-
-            if ($isMeeting) {
-                Write-Host "`nNote: This was a meeting. Cancellation may be sent to attendees." -ForegroundColor Yellow
-            }
-        }
-    }
+    $item.Delete()
+    if ($Json) { $o = ConvertTo-EventJson $rec; $o.Action = "delete"; $o.Result = "deleted"; $o.Scope = $scope; Write-Json $o; exit 0 }
+    Write-Host "=== EVENT DELETED ($scope) ===" -ForegroundColor Green
+    Write-EventRecord $rec -Prefix "  "
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Calendar) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Calendar) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

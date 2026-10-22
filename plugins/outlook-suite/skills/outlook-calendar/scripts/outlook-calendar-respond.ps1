@@ -1,141 +1,77 @@
 param(
     [string]$EntryID = "",
     [int]$Index = 0,
+    [datetime]$OccurrenceStart,
 
     [Parameter(Mandatory=$true)]
     [ValidateSet("Accept", "Tentative", "Decline")]
     [string]$Response,
 
     [int]$Days = 7,
-    [switch]$NoResponse
+    [switch]$NoResponse,
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Calendar Respond Script
-# Usage: .\outlook-calendar-respond.ps1 -EntryID "00000000..." -Response Accept (preferred)
-# Usage: .\outlook-calendar-respond.ps1 -Index 1 -Response Accept (fallback)
-# Decline: .\outlook-calendar-respond.ps1 -EntryID "00000000..." -Response Decline
-# Tentative without sending response: .\outlook-calendar-respond.ps1 -Index 1 -Response Tentative -NoResponse
+# Outlook Calendar Respond: accept, tentatively accept or decline a meeting invitation.
+# Sends the response to the organizer. Irreversible: previews unless -Confirm.
+# -NoResponse changes only your copy and never calls Outlook's Respond(): Accept/Tentative
+# set the event's show-as, Decline removes it from your calendar.
+# Usage: .\outlook-calendar-respond.ps1 -EntryID "00000000..." -Response Accept -Confirm
+# Decline one occurrence: .\outlook-calendar-respond.ps1 -EntryID "00000000..." -OccurrenceStart "2026-02-05 09:00" -Response Decline -Confirm
+# Without telling the organizer: .\outlook-calendar-respond.ps1 -EntryID "00000000..." -Response Tentative -NoResponse -Confirm
 
-# Response constants
-# olMeetingAccepted = 3
-# olMeetingTentative = 2
-# olMeetingDeclined = 4
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_calendar.ps1")
 
-$Outlook = $null
-$Namespace = $null
-$Calendar = $null
+$codes = @{ "Accept" = 3; "Tentative" = 2; "Decline" = 4 }   # olMeetingAccepted / Tentative / Declined
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $occ = $null; if ($PSBoundParameters.ContainsKey("OccurrenceStart")) { $occ = $OccurrenceStart }
+    $item = Get-CalendarItem -Namespace $Namespace -EntryID $EntryID -Index $Index -Days $Days -OccurrenceStart $occ
+    $ms = [int]$item.MeetingStatus
+    if ($ms -eq 0) { Stop-WithError "This is an appointment, not a meeting invitation. Nothing to respond to." }
+    if ($ms -eq 1) { Stop-WithError "You organize this meeting. Use outlook-calendar-update.ps1 or outlook-calendar-delete.ps1 instead." }
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetEvent = $null
-
-    if ($EntryID) {
-        $targetEvent = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetEvent) {
-            Write-Host "ERROR: Event not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-calendar-list.ps1 to find events and get EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        $Calendar = $Namespace.GetDefaultFolder(9)  # olFolderCalendar = 9
-
-        $items = $Calendar.Items
-        $items.Sort("[Start]")
-        $items.IncludeRecurrences = $true
-
-        # Get events from now to Days ahead (fixed Outlook Restrict format)
-        $now = Get-Date
-        $restrictCulture = [System.Globalization.CultureInfo]::InvariantCulture
-        $startDate = $now.ToString("MM/dd/yyyy HH:mm", $restrictCulture)
-        $endDate = $now.AddDays($Days).ToString("MM/dd/yyyy HH:mm", $restrictCulture)
-
-        $filter = "[Start] >= '$startDate' AND [Start] <= '$endDate'"
-        $events = $items.Restrict($filter)
-
-        $count = 0
-        foreach ($event in $events) {
-            $count++
-            if ($count -eq $Index) {
-                $targetEvent = $event
-                break
-            }
-        }
-
-        if (-not $targetEvent) {
-            Write-Host "`nEvent at index $Index not found in next $Days days." -ForegroundColor Red
-            Write-Host "Use outlook-calendar-list.ps1 -Days $Days to see available events." -ForegroundColor Gray
-        }
+    $send = -not $NoResponse
+    $what = if ($send) { "the '$Response' response to the organizer" } else { "the '$Response' response (not sent)" }
+    $details = [ordered]@{ Response = $Response; "Tell organizer" = $(if ($send) { "yes" } else { "no" }) }
+    $rec = ConvertTo-EventRecord $item
+    if ($rec.Recurring -and -not $rec.Occurrence) { $details.Scope = "the ENTIRE SERIES (every occurrence); add -OccurrenceStart for one" }
+    # -NoResponse: the show-as changes only when it does not already say what you mean
+    # (Accept: Free/Tentative -> Busy; Tentative: Free/Busy -> Tentative; Out of Office and
+    # Working Elsewhere are never touched).
+    $oldBusy = [int]$item.BusyStatus; $newBusy = $oldBusy
+    if (-not $send -and $Response -eq "Accept" -and $oldBusy -in 0, 1) { $newBusy = 2 }
+    if (-not $send -and $Response -eq "Tentative" -and $oldBusy -in 0, 2) { $newBusy = 1 }
+    if (-not $send -and $Response -ne "Decline") { $details.ShowAs = "$($script:BusyNames[$oldBusy]) -> $($script:BusyNames[$newBusy])" }
+    if ((Confirm-CalendarAction -Action "respond" -Title "RESPOND TO MEETING" -Item $item -Confirmed $Confirm -Details $details -What $what -Json:$Json) -ne $true) { Write-CalendarPreview; exit 0 }
+    if ($send) {
+        # Respond(code, fNoUI = $true) returns the response item; Send() sends it.
+        $reply = $item.Respond($codes[$Response], $true)
+        if ($reply) { $reply.Send() }
     } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an event." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-calendar-respond.ps1 -EntryID ""00000000..."" -Response Accept" -ForegroundColor Gray
+        # -NoResponse never calls Respond(): Microsoft's docs disagree on whether
+        # Respond(code, $true) sends by itself. Only the local copy changes instead:
+        # Accept / Tentative adjust show-as (see above) and save; Decline removes the event.
+        if ($Response -eq "Decline") { $item.Delete() }
+        elseif ($newBusy -ne $oldBusy) { $item.BusyStatus = $newBusy; $item.Save() }
     }
 
-    if ($targetEvent) {
-        # Check if it's actually a meeting (not just an appointment)
-        if ($targetEvent.MeetingStatus -eq 0) {
-            Write-Host "`nThis is an appointment, not a meeting invite." -ForegroundColor Yellow
-            Write-Host "You can only respond to meetings you've been invited to." -ForegroundColor Gray
-            Write-Host "Subject: $($targetEvent.Subject)" -ForegroundColor Gray
-        } else {
-            # Store event info
-            $subject = $targetEvent.Subject
-            $organizer = $targetEvent.Organizer
-            $startTime = $targetEvent.Start
-
-            # Map response to constant
-            $responseType = switch ($Response) {
-                "Accept" { 3 }      # olMeetingAccepted
-                "Tentative" { 2 }   # olMeetingTentative
-                "Decline" { 4 }     # olMeetingDeclined
-            }
-
-            # Send response (or not)
-            $sendResponse = -not $NoResponse
-
-            # Respond to the meeting
-            $responseItem = $targetEvent.Respond($responseType, $sendResponse)
-
-            # Determine color based on response
-            $color = switch ($Response) {
-                "Accept" { "Green" }
-                "Tentative" { "Yellow" }
-                "Decline" { "Red" }
-            }
-
-            Write-Host "`n=== MEETING RESPONSE: $($Response.ToUpper()) ===" -ForegroundColor $color
-            Write-Host "Subject: $subject" -ForegroundColor Yellow
-            Write-Host "Organizer: $organizer"
-            Write-Host "Date: $($startTime.ToString('ddd, MMM d, yyyy'))"
-            Write-Host "Time: $($startTime.ToString('h:mm tt'))" -ForegroundColor Gray
-
-            if ($sendResponse) {
-                Write-Host "`nResponse sent to organizer." -ForegroundColor Cyan
-            } else {
-                Write-Host "`nResponse saved (not sent to organizer)." -ForegroundColor Gray
-            }
-        }
+    if ($Json) {
+        $o = ConvertTo-EventJson $rec; $o.Action = "respond"; $o.Response = $Response; $o.Sent = $send
+        if ($details.Contains("Scope")) { $o.Scope = $details.Scope }
+        if ($details.Contains("ShowAs")) { $o.ShowAs = $details.ShowAs }
+        Write-Json $o; exit 0
     }
+    $color = @{ "Accept" = "Green"; "Tentative" = "Yellow"; "Decline" = "Red" }[$Response]
+    Write-Host "=== MEETING RESPONSE: $($Response.ToUpper()) ===" -ForegroundColor $color
+    Write-EventRecord $rec -Prefix "  "
+    if ($details.Contains("Scope")) { Write-Host "  Scope: $($details.Scope)" -ForegroundColor Cyan }
+    if ($details.Contains("ShowAs")) { Write-Host "  Shows as: $($details.ShowAs)" -ForegroundColor Cyan }
+    if ($send) { Write-Host "  Response sent to the organizer." -ForegroundColor Cyan } else { Write-Host "  Changed in your calendar only; the organizer was not told." -ForegroundColor Gray }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Calendar) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Calendar) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

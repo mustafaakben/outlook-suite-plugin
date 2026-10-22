@@ -36,6 +36,10 @@ if (-not $tf) { $tf = $del.Folders.Add("_suite-test") }
 # Note: some account types (for example Outlook.com) refuse move/copy actions in rules made by
 # script, so this test uses category + stop actions, which every mailbox accepts.
 
+# Force the confirm gate on for the whole run, whatever the user's config says, and restore it after.
+$prevGate = $env:OUTLOOK_SUITE_REQUIRE_CONFIRM
+$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "1"
+
 try {
     $r = Run "outlook-rules-list.ps1" @("-Mailbox", $Mailbox, "-Json")
     $before = (JsonOf $r).total
@@ -69,6 +73,7 @@ try {
     Check "rules-manage unknown rule exits 1" ($r.Exit -eq 1)
 }
 finally {
+    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = $prevGate
     try {
         $rules = $store.GetRules(); $changed = $false
         foreach ($n in $name, "$name-2") { for ($i = $rules.Count; $i -ge 1; $i--) { if ($rules.Item($i).Name -eq $n) { $rules.Remove($i); $changed = $true } } }

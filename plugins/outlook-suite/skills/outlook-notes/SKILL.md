@@ -1,137 +1,93 @@
 ---
 name: outlook-notes
-description: "Manage Outlook notes via PowerShell: list, create, read, and delete sticky notes with color coding and search. Auto-starts Outlook if needed."
+description: "Manage Outlook sticky notes via PowerShell: list, search the full note text, filter by color or category, read, create and delete notes. Fast table queries, -Json output, confirmation for delete. Auto-starts Outlook if needed."
 ---
 
 # Outlook Notes
 
-Manage Microsoft Outlook sticky notes using PowerShell COM objects.
+Manage Microsoft Outlook sticky notes with PowerShell COM scripts. All scripts share the outlook-suite helpers in `../outlook-mail/scripts/_common.ps1` (loaded through `scripts/_common.ps1`): same connection handling, `-Json`, errors as `Error: ...` with exit code 1, and the same confirmation gate as the mail scripts.
 
 ## Prerequisites
 
-- Microsoft Outlook installed (scripts auto-start Outlook if it is not already running)
-- PowerShell 5.1+ (included in Windows 10/11)
+- Classic Microsoft Outlook for Windows (scripts start it with its window if it is not running).
+- Windows PowerShell 5.1 or PowerShell 7.
 
-## Link Stripping
+## Fast path (warm host)
 
-All notes scripts that display body content support a `-StripLinks` parameter (default: `$true`). When active, URLs in output are replaced with `[URL]` to reduce context window bloat from long tracking URLs, Safe Links wrappers, and marketing links.
+```powershell
+& "../outlook-mail/scripts/outlook-call.ps1" notes-list -Search "budget"
+& "../outlook-mail/scripts/outlook-call.ps1" notes-read -EntryID "00000000..."
+```
 
-To see raw URLs, pass `-StripLinks $false`.
+## Links
 
-## List Notes
+Scripts that show note text take `-StripLinks` (default `$true`): links appear as `[URL-001]`, and `outlook-notes-read.ps1` lists the full URLs at the end. Pass `-StripLinks $false` (or `false` / `0`) to keep links inline.
 
-### outlook-notes-list.ps1
+## Choosing a note
 
-Browse notes with optional color filtering and search. Returns EntryIDs for use with action scripts.
+`-EntryID` (preferred, from `outlook-notes-list.ps1`), or `-Index N`: the N-th note in `outlook-notes-list.ps1` order with the same `-Color`, `-Search` and `-Category` filters. Index positions shift as notes change.
 
-**Required Parameters:** None (lists all notes by default)
+## outlook-notes-list.ps1
+
+Notes, most recently changed first, from one fast table query. Each shows color, a one-line preview, EntryID, categories and when it was last changed.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `-Limit` | int | 20 | Maximum notes to display |
-| `-Color` | string | All | Filter by color: All, Blue, Green, Pink, Yellow, White |
-| `-Search` | string | — | Search note content (case-insensitive) |
-| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in note preview |
+| `-Search` | string | — | The note text contains this (whole note, plain substring, any case) |
+| `-Color` | string | All | All, Blue, Green, Pink, Yellow, White |
+| `-Category` | string | — | Has this category |
+| `-Limit` | int | 20 | Maximum notes shown (the total matching is always reported) |
+| `-StripLinks` | bool | $true | See Links |
+| `-Json` | switch | false | `{ folder, total, count, query, items[] }`; each item has `Title` (first line) and `Preview` (first 255 characters) |
 
 ```powershell
-# List all notes
 & "./scripts/outlook-notes-list.ps1"
-
-# List yellow notes only
-& "./scripts/outlook-notes-list.ps1" -Color Yellow
-
-# Search notes
-& "./scripts/outlook-notes-list.ps1" -Search "meeting"
-
-# Combined filter
-& "./scripts/outlook-notes-list.ps1" -Color Pink -Search "important"
+& "./scripts/outlook-notes-list.ps1" -Search "meeting" -Color Pink
+& "./scripts/outlook-notes-list.ps1" -Category "Research" -Json
 ```
 
-## Create Note
+## outlook-notes-read.ps1
 
-### outlook-notes-create.ps1
-
-Create a new sticky note with optional color.
-
-**Required Parameters:** `-Body`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-Body` | string | **Required** | Note content text |
-| `-Color` | string | Yellow | Note color: Blue, Green, Pink, Yellow, White |
-| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in preview/content output |
+The full text of one note, with color, categories, created and modified dates. `-Json` returns the note with `Body` and `Links`. Targeting: `-EntryID`, or `-Index` with the list filters.
 
 ```powershell
-# Create a note (default yellow)
-& "./scripts/outlook-notes-create.ps1" -Body "Remember to call John"
-
-# Create a colored note
-& "./scripts/outlook-notes-create.ps1" -Body "Important meeting notes" -Color Pink
-
-# Create a multiline note
-& "./scripts/outlook-notes-create.ps1" -Body "Line 1`nLine 2`nLine 3" -Color Blue
-```
-
-## Read Note
-
-### outlook-notes-read.ps1
-
-Read the full content of a note. Uses EntryID (preferred) or Index as targeting method.
-
-**Required Parameters:** `-EntryID` or `-Index`
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `-EntryID` | string | — | Note's unique EntryID (preferred, from list) |
-| `-Index` | int | 0 | Note position number (fallback) |
-| `-Color` | string | All | Filter by color before applying Index (ignored with EntryID) |
-| `-Search` | string | — | Search filter before applying Index (ignored with EntryID) |
-| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in note body output |
-
-```powershell
-# Read by EntryID (preferred)
 & "./scripts/outlook-notes-read.ps1" -EntryID "00000000..."
-
-# Read by index
-& "./scripts/outlook-notes-read.ps1" -Index 1
-
-# Read with color filter
-& "./scripts/outlook-notes-read.ps1" -Index 1 -Color Yellow
+& "./scripts/outlook-notes-read.ps1" -Index 1 -Search "budget"
 ```
 
-## Delete Note
+## outlook-notes-create.ps1
 
-### outlook-notes-delete.ps1
-
-Delete a note from Outlook. Uses EntryID (preferred) or Index as targeting method.
-
-**Required Parameters:** `-EntryID` or `-Index`
+Create a note (a local item; nothing is sent). The first line of the text becomes its title.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `-EntryID` | string | — | Note's unique EntryID (preferred) |
-| `-Index` | int | 0 | Note position number (fallback) |
-| `-Color` | string | All | Filter by color before applying Index (ignored with EntryID) |
-| `-Search` | string | — | Search filter before applying Index (ignored with EntryID) |
-| `-StripLinks` | bool | $true | Replace URLs with `[URL]` in note preview |
+| `-Body` | string | **Required** | Note text (multi-line allowed) |
+| `-Color` | string | Yellow | Blue, Green, Pink, Yellow, White |
+| `-Categories` | string | — | e.g. `"Research"` |
+| `-Json` | switch | false | The new note as JSON (with its EntryID) |
 
 ```powershell
-# Delete by EntryID (preferred)
-& "./scripts/outlook-notes-delete.ps1" -EntryID "00000000..."
-
-# Delete by index
-& "./scripts/outlook-notes-delete.ps1" -Index 1
-
-# Delete with color filter
-& "./scripts/outlook-notes-delete.ps1" -Index 1 -Color Yellow
+& "./scripts/outlook-notes-create.ps1" -Body "Remember to call John"
+& "./scripts/outlook-notes-create.ps1" -Body "Idea: ...`nSecond line" -Color Pink -Categories "Research"
 ```
 
-## Reference: Note Colors
+## outlook-notes-delete.ps1
 
-| Index | Color |
+Move a note to Deleted Items. Previews unless `-Confirm` (follows the `delete` confirmation setting; see the outlook-mail SKILL.md). Targeting as in read. `-Json` available.
+
+```powershell
+& "./scripts/outlook-notes-delete.ps1" -EntryID "00000000..."            # preview
+& "./scripts/outlook-notes-delete.ps1" -EntryID "00000000..." -Confirm
+```
+
+## Reference: note colors
+
+| Value | Color |
 |-------|-------|
-| 0 | Blue |
+| 0 | Blue (also notes with no color set) |
 | 1 | Green |
 | 2 | Pink |
 | 3 | Yellow |
 | 4 | White |
+
+Tests: `tests/Test-Notes.ps1` (live, on `[suite-test]` notes; prints PASS/FAIL only).

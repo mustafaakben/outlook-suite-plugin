@@ -125,16 +125,18 @@ Typical flow: `outlook-reply.ps1 -EntryID <id> -HtmlFile reply.html -ReplyAll -R
 
 Every irreversible or outward-facing action is available, and each one checks a confirmation flag. Without `-Confirm` it previews exactly what would happen and does nothing (exit 0).
 
-Gated actions, by the key used in config.json:
+Gated actions, by the key used in config.json. The keys cover every skill in the suite, not only mail:
 
 | Key | Actions |
 |---|---|
-| `send` | send, send-as, send-draft, schedule-send, voting, request-receipt, reply/forward `-Send` |
-| `delete` | delete (and `-Permanent`), recall `-DeleteUnread` |
+| `send` | mail: send, send-as, send-draft, schedule-send, voting, request-receipt, reply/forward `-Send`. Calendar: create and recurring with attendees, hold-to-invite, update `-SendUpdate`, forward `-Send`, cancel. Tasks: assign |
+| `respond` | calendar respond (accept, tentative, decline) |
+| `delete` | mail delete (and `-Permanent`), recall `-DeleteUnread`; calendar, contact, task and note delete; contacts dedupe `-Merge` |
+| `import` | contacts import |
 | `edit-draft` | replacing draft text, removing draft attachments |
 | `rules` | rules create, enable/disable, rename, reorder, delete, run now |
 | `folders` | folder rename, move, delete, empty, mark all read |
-| `bulk` | every `outlook-bulk` action |
+| `bulk` | every `outlook-bulk` action; tasks triage |
 | `category-delete` | deleting a category from the master list |
 | `out-of-office` | turning auto-replies on or off |
 | `junk` | block sender, safe sender |

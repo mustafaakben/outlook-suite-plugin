@@ -49,15 +49,22 @@ if ($Cwd -and (Test-Path -LiteralPath $Cwd)) { Set-Location -LiteralPath $Cwd }
 $global:LASTEXITCODE = 0
 $lines = New-Object System.Collections.Generic.List[string]
 $code = 0
+$partial = ""   # Write-Host -NoNewline text, joined with what follows on the same line
 try {
     $sb = [scriptblock]::Create("& '$($Path.Replace("'", "''"))' $ArgLine *>&1")
     foreach ($rec in (& $sb)) {
-        if ($rec -is [System.Management.Automation.InformationRecord]) { $lines.Add([string]$rec.MessageData) }
-        elseif ($rec -is [System.Management.Automation.ErrorRecord]) { $lines.Add("Error: $($rec.Exception.Message)") }
+        if ($rec -is [System.Management.Automation.InformationRecord]) {
+            $m = $rec.MessageData
+            if ($m -is [System.Management.Automation.HostInformationMessage] -and $m.NoNewLine) { $partial += [string]$m.Message; continue }
+            $lines.Add($partial + [string]$m); $partial = ""; continue
+        }
+        if ($partial) { $lines.Add($partial); $partial = "" }
+        if ($rec -is [System.Management.Automation.ErrorRecord]) { $lines.Add("Error: $($rec.Exception.Message)") }
         elseif ($rec -is [System.Management.Automation.WarningRecord]) { $lines.Add("WARNING: $($rec.Message)") }
         elseif ($rec -is [string]) { $lines.Add($rec) }
         elseif ($null -ne $rec) { foreach ($l in ($rec | Out-String -Stream)) { $lines.Add($l) } }
     }
+    if ($partial) { $lines.Add($partial) }
     $code = [int]$global:LASTEXITCODE
 } catch {
     $lines.Add("Error: $($_.Exception.Message)")

@@ -42,6 +42,10 @@ $draft.Save()
 $id = $draft.EntryID
 Write-Host "Sandbox ready; test draft created." -ForegroundColor Gray
 
+# Force the confirm gate on for the whole run, whatever the user's config says, and restore it after.
+$prevGate = $env:OUTLOOK_SUITE_REQUIRE_CONFIRM
+$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "1"
+
 try {
     # Flag / unflag
     $r = Run "outlook-flag.ps1" @("-EntryID", $id, "-When", "Tomorrow", "-ReminderDate", (Get-Date).AddDays(2).ToString("yyyy-MM-dd 09:00"))
@@ -109,7 +113,7 @@ try {
 
     $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "0"
     $r = Run "outlook-delete.ps1" @("-EntryID", $id)
-    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = $null
+    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "1"
     $deleted = $Namespace.GetDefaultFolder(3)
     $inDeleted = $null; foreach ($d in $deleted.Items.Restrict("[Subject] = '$($draft.Subject.Replace("'", "''"))'")) { $inDeleted = $d }
     Check "confirmation switched off: delete acts without -Confirm" ($r.Exit -eq 0 -and $inDeleted)
@@ -146,6 +150,7 @@ try {
     Check "bad EntryID exits 1" ($r.Exit -eq 1 -and $r.Out -match "Error:")
 }
 finally {
+    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = $prevGate
     foreach ($n in "suite-test-cat", "suite-test-cat-2") {
         $i = 0; foreach ($c in $Namespace.Categories) { $i++; if ($c.Name -eq $n) { $Namespace.Categories.Remove($i); break } }
     }

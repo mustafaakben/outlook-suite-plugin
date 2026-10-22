@@ -5,170 +5,61 @@ param(
     [ValidateSet("All", "Blue", "Green", "Pink", "Yellow", "White")]
     [string]$Color = "All",
     [string]$Search = "",
-    [bool]$StripLinks = $true
+    [string]$Category = "",
+    $StripLinks = $true,   # $true/$false (also "false" or 0 from pwsh -File)
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Helper: strip URLs from text to reduce context window bloat
-function Strip-Links([string]$text) {
-    if (-not $text) { return $text }
-    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
-}
+# Outlook Note Delete: move a note to Deleted Items.
+# Irreversible action: previews unless -Confirm (or confirmation for "delete" is turned off;
+# see the outlook-mail SKILL.md "Confirmation").
+# Usage: .\outlook-notes-delete.ps1 -EntryID "00000000..." -Confirm (preferred)
+# Usage: .\outlook-notes-delete.ps1 -Index 1 -Confirm (position in outlook-notes-list.ps1 order, same filters)
 
-# Outlook Note Delete Script
-# Delete a note
-# Usage: .\outlook-notes-delete.ps1 -EntryID "00000000..." (preferred)
-# Usage: .\outlook-notes-delete.ps1 -Index 1 (fallback)
-# With color filter: .\outlook-notes-delete.ps1 -Index 1 -Color Yellow
-
-$colorMap = @{
-    "Blue" = 0
-    "Green" = 1
-    "Pink" = 2
-    "Yellow" = 3
-    "White" = 4
-}
-
-$colorNames = @{
-    0 = "Blue"
-    1 = "Green"
-    2 = "Pink"
-    3 = "Yellow"
-    4 = "White"
-}
-
-$colorDisplay = @{
-    0 = "Cyan"
-    1 = "Green"
-    2 = "Magenta"
-    3 = "Yellow"
-    4 = "White"
-}
-
-function Test-IsOutlookNoteItem {
-    param([object]$Item)
-
-    if (-not $Item) {
-        return $false
-    }
-
-    try {
-        $messageClass = $Item.MessageClass
-        if ($messageClass -and $messageClass -like "IPM.StickyNote*") {
-            return $true
-        }
-    } catch {}
-
-    try {
-        return ([int]$Item.Class -eq 44)  # olNote
-    } catch {
-        return $false
-    }
-}
-
-$Outlook = $null
-$Namespace = $null
-$Notes = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_notes.ps1")
+$StripLinks = ConvertTo-StripLinks $StripLinks
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
+    $null = Connect-Outlook
+    $note = Resolve-NoteItem -Namespace $Namespace -EntryID $EntryID -Index $Index -Color $Color -Search $Search -Category $Category
+    $rec = ConvertTo-NoteRecord $note
+    $preview = Format-NotePreview $rec.Preview $StripLinks
+
+    # Fail closed: anything but exactly $true (confirmed, or the gate turned off) means preview only.
+    $go = [bool]$Confirm -or -not (Test-ConfirmRequired -Action "delete")
+    if ($go -ne $true) {
+        if ($Json) {
+            $o = ConvertTo-NoteJson $rec
+            $o.Preview = $preview
+            $o.Action = "delete"; $o.Result = "preview"; $o.Done = $false
+            $o.Hint = "Nothing was done. Run the same command with -Confirm to delete."
+            Write-Json $o
+            exit 0
+        }
+        Write-Host "=== DELETE NOTE (move to Deleted Items) (PREVIEW) ===" -ForegroundColor Yellow
+        Write-Host "  EntryID: $($rec.EntryID)"
+        Write-Host "  Color: $($rec.Color)"
+        Write-Host "  Content: $preview" -ForegroundColor Gray
+        Write-Host "  Modified: $(Format-MailDate $rec.Modified)" -ForegroundColor Gray
+        $null = Approve-Action -Action "delete" -Confirmed $false -What "the delete"   # preview footer only; the gate decision is $go
+        exit 0
     }
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetNote = $null
-
-    if ($EntryID) {
-        $resolvedItem = $Namespace.GetItemFromID($EntryID)
-        if (-not $resolvedItem) {
-            Write-Host "ERROR: Note not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-notes-list.ps1 to find notes and get EntryIDs." -ForegroundColor Gray
-        } elseif (-not (Test-IsOutlookNoteItem -Item $resolvedItem)) {
-            Write-Host "ERROR: Provided EntryID does not resolve to an Outlook note." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-notes-list.ps1 to get EntryIDs from notes only." -ForegroundColor Gray
-        } else {
-            $targetNote = $resolvedItem
-        }
-    } elseif ($Index -gt 0) {
-        $Notes = $Namespace.GetDefaultFolder(12)  # olFolderNotes = 12
-        $items = $Notes.Items
-        $items.Sort("[LastModificationTime]", $true)
-
-        # Build filtered list
-        $filteredNotes = @()
-        foreach ($note in $items) {
-            # Filter by color
-            if ($Color -ne "All") {
-                if ($note.Color -ne $colorMap[$Color]) {
-                    continue
-                }
-            }
-
-            # Filter by search
-            if ($Search) {
-                $searchLower = $Search.ToLower()
-                $body = if ($note.Body) { $note.Body.ToLower() } else { "" }
-                if (-not $body.Contains($searchLower)) {
-                    continue
-                }
-            }
-
-            $filteredNotes += $note
-        }
-
-        # Find the note at the specified index
-        if ($Index -lt 1 -or $Index -gt $filteredNotes.Count) {
-            Write-Host "`nNote at index $Index not found." -ForegroundColor Red
-            if ($Color -ne "All" -or $Search) {
-                Write-Host "Use outlook-notes-list.ps1 with same filters to see available notes." -ForegroundColor Gray
-            } else {
-                Write-Host "Use outlook-notes-list.ps1 to see available notes." -ForegroundColor Gray
-            }
-        } else {
-            $targetNote = $filteredNotes[$Index - 1]
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to delete a note." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-notes-delete.ps1 -EntryID ""00000000...""" -ForegroundColor Gray
+    $note.Delete()
+    if ($Json) {
+        $o = ConvertTo-NoteJson $rec
+        $o.Preview = $preview
+        $o.Action = "delete"; $o.Result = "deleted"
+        Write-Json $o
+        exit 0
     }
-
-    if ($targetNote) {
-        # Get note details for confirmation
-        $noteColor = $colorNames[$targetNote.Color]
-        $displayColor = $colorDisplay[$targetNote.Color]
-        $body = if ($targetNote.Body) { $targetNote.Body } else { "(Empty note)" }
-        $preview = $body -replace "`r`n", " " -replace "`n", " "
-        if ($preview.Length -gt 60) {
-            $preview = $preview.Substring(0, 57) + "..."
-        }
-        if ($StripLinks) { $preview = Strip-Links $preview }
-
-        # Delete the note
-        $targetNote.Delete()
-
-        Write-Host "`n=== NOTE DELETED ===" -ForegroundColor Green
-        Write-Host "Color: $noteColor" -ForegroundColor $displayColor
-        Write-Host "Content: $preview" -ForegroundColor Gray
-
-        Write-Host "`nNote moved to Deleted Items." -ForegroundColor Cyan
-    }
+    Write-Host "=== NOTE DELETED (moved to Deleted Items) ===" -ForegroundColor Green
+    Write-Host "  EntryID (no longer valid): $($rec.EntryID)"
+    Write-Host "  Color: $($rec.Color)"
+    Write-Host "  Content: $preview" -ForegroundColor Gray
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Notes) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Notes) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }
