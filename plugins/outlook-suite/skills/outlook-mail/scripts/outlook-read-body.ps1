@@ -1,98 +1,45 @@
 param(
     [string]$EntryID = "",
+    [string]$StoreID = "",
     [int]$Index = 0,
     [int]$Days = 7,
-    [bool]$StripLinks = $true
+    [ValidateSet("domain", "full", "none")]
+    [string]$Links = "domain",
+    [ValidateSet("text", "html")]
+    [string]$Format = "text",
+    [switch]$Json,
+    [bool]$StripLinks = $true   # legacy: -StripLinks:$false is the same as -Links full
 )
 
-# Helper: strip URLs from text to reduce context window bloat
-function Strip-Links([string]$text) {
-    if (-not $text) { return $text }
-    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
-}
+# Outlook Email Body Reader: one email in full (headers, recipients, body, attachments, links).
+# Links appear as [URL-001] with a reference table; full URLs: -Links full or outlook-links.ps1.
+# Usage: .\outlook-read-body.ps1 -EntryID "00000000..."
+# Usage: .\outlook-read-body.ps1 -EntryID "00000000..." -Links full
+# Usage: .\outlook-read-body.ps1 -EntryID "00000000..." -Format html      (raw HTML body)
 
-# Outlook Email Body Reader
-# Usage: .\outlook-read-body.ps1 -EntryID "00000000..." (preferred)
-# Usage: .\outlook-read-body.ps1 -Index 3 -Days 2 (fallback)
+. (Join-Path $PSScriptRoot "_common.ps1")
+if (-not $StripLinks) { $Links = "full" }
 
-$Outlook = $null
 try {
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $email = $null
-
-    if ($EntryID) {
-        # EntryID = primary (direct lookup)
-        $email = $Namespace.GetItemFromID($EntryID)
-        if (-not $email) {
-            Write-Host "ERROR: Email not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-find.ps1 to get valid EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        # Index = fallback (scan)
-        $Inbox = $Namespace.GetDefaultFolder(6)
-        $since = (Get-Date).AddDays(-$Days).ToString("g")
-        $filter = "[ReceivedTime] >= '$since'"
-        $items = $Inbox.Items.Restrict($filter)
-        $items.Sort("[ReceivedTime]", $true)
-
-        $count = 0
-        foreach ($item in $items) {
-            $count++
-            if ($count -eq $Index) {
-                $email = $item
-                break
-            }
-        }
-
-        if (-not $email) {
-            Write-Host "Email at index $Index not found in last $Days days." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-read.ps1 -Days $Days to see available emails." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an email." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-read-body.ps1 -EntryID ""00000000...""" -ForegroundColor Gray
-        Write-Host "       .\outlook-read-body.ps1 -Index 3 -Days 2" -ForegroundColor Gray
-    }
-
-    if ($email) {
-        $senderAddr = $email.SenderEmailAddress
-        if ($senderAddr -match "/O=") { $senderAddr = $email.SenderName }
-
-        Write-Host "`n=== EMAIL ===" -ForegroundColor Cyan
-        Write-Host "Subject: $($email.Subject)" -ForegroundColor Yellow
-        Write-Host "From: $($email.SenderName) <$senderAddr>"
-        Write-Host "Date: $($email.ReceivedTime.ToString('g'))"
-        Write-Host "To: $($email.To)"
-        if ($email.CC) { Write-Host "CC: $($email.CC)" }
-        if ($email.BCC) { Write-Host "BCC: $($email.BCC)" }
-        Write-Host "`n--- BODY ---" -ForegroundColor Gray
-        $bodyText = $email.Body
-        if ($StripLinks) { $bodyText = Strip-Links $bodyText }
-        Write-Host $bodyText
+    if ($Format -eq "html") {
+        $rec = ConvertTo-MailRecord $email -WithRecipients
+        $rec.HTMLBody = $email.HTMLBody
+        if ($Json) { Write-Json (ConvertTo-JsonRecord $rec); exit 0 }
+        Write-MailRecord $rec -Header "=== EMAIL (HTML) ==="
+        Write-Host "--- HTML BODY ---" -ForegroundColor Gray
+        Write-Host $rec.HTMLBody
         Write-Host "--- END ---" -ForegroundColor Gray
-
-        if ($email.Attachments.Count -gt 0) {
-            Write-Host "`nAttachments:" -ForegroundColor Yellow
-            foreach ($att in $email.Attachments) {
-                Write-Host "  - $($att.FileName)"
-            }
-        }
+        exit 0
     }
+
+    $rec = ConvertTo-MailRecord $email -WithRecipients -WithBody -Links $Links
+    if ($Json) { Write-Json (ConvertTo-JsonRecord $rec); exit 0 }
+    Write-MailRecord $rec -Header "=== EMAIL ===" -LinkTable
+    Write-Host "--- END ---" -ForegroundColor Gray
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

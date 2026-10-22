@@ -1,154 +1,106 @@
-param(
+﻿param(
     [string]$EntryID = "",
+    [string]$StoreID = "",
     [int]$Index = 0,
-
-    [Parameter(Mandatory=$true)]
-    [string]$Body,
-
     [int]$Days = 7,
+    [string]$Body = "",
+    [switch]$HTML,
+    [string]$HtmlFile = "",
     [switch]$ReplyAll,
+    [switch]$RemoveAutoSignature,
+    [string]$DraftEntryID = "",
+    [string]$AddTo = "",
+    [string]$AddCC = "",
+    [string]$AddBCC = "",
+    [string[]]$Attachment = @(),
+    [switch]$Send,
     [switch]$Confirm,
-    [bool]$StripLinks = $true
+    [switch]$Display,
+    [switch]$Json,
+    [bool]$StripLinks = $true   # legacy, ignored
 )
 
-# Helper: strip URLs from text to reduce context window bloat
-function Strip-Links([string]$text) {
-    if (-not $text) { return $text }
-    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
-}
+# Outlook Reply: reply (or -ReplyAll) inside the original thread. The quoted thread is kept
+# intact; your text goes at the top in Outlook's own HTML style (Aptos 11pt div blocks), or
+# pass your own HTML with -HTML / -HtmlFile.
+#
+# Default: saves ONE reply draft and prints its EntryID (nothing is sent).
+#   Update that draft instead of making another: -DraftEntryID <draft EntryID> -Body "..."
+#   (replacing the text is an edit: previews unless -Confirm).
+#   Send: -Send -Confirm (or -Confirm alone, as before). Outward-facing: previews unless confirmed.
+# -RemoveAutoSignature drops the signature Outlook inserts automatically into replies
+# (useful when your text already ends with your own signature).
+#
+# Usage: .\outlook-reply.ps1 -EntryID "00000000..." -Body "Thanks, see you Friday." -ReplyAll
+# Usage: .\outlook-reply.ps1 -EntryID "00000000..." -HtmlFile .\reply.html -ReplyAll -RemoveAutoSignature
+# Usage: .\outlook-reply.ps1 -DraftEntryID "<draft>" -Body "New wording" -Confirm
+# Usage: .\outlook-reply.ps1 -DraftEntryID "<draft>" -Send -Confirm
 
-# Outlook Reply Script
-# Usage: .\outlook-reply.ps1 -EntryID "00000000..." -Body "Thank you for your email." (preferred)
-# Usage: .\outlook-reply.ps1 -Index 1 -Body "Thank you for your email." (fallback)
-# Without -Confirm, creates a draft in the Drafts folder.
-
-$Outlook = $null
-$reply = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 try {
-    # Connect to Outlook (fast path if already running)
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $wantSend = $Send -or ($Confirm -and -not $DraftEntryID -and -not $PSBoundParameters.ContainsKey("Send"))
+    $original = ""
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetEmail = $null
-
-    if ($EntryID) {
-        # EntryID = primary (direct lookup)
-        $targetEmail = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetEmail) {
-            Write-Host "ERROR: Email not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-find.ps1 to get valid EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        # Index = fallback (scan)
-        $Inbox = $Namespace.GetDefaultFolder(6)
-        $since = (Get-Date).AddDays(-$Days).ToString("g")
-        $filter = "[ReceivedTime] >= '$since'"
-        $items = $Inbox.Items.Restrict($filter)
-        $items.Sort("[ReceivedTime]", $true)
-
-        $count = 0
-        foreach ($email in $items) {
-            $count++
-            if ($count -eq $Index) {
-                $targetEmail = $email
-                break
-            }
-        }
-
-        if (-not $targetEmail) {
-            Write-Host "`nEmail at index $Index not found in last $Days days." -ForegroundColor Red
-            Write-Host "Use outlook-read.ps1 -Days $Days to see available emails." -ForegroundColor Gray
-        }
+    if ($DraftEntryID) {
+        $mail = Get-OutlookItem -Namespace $Namespace -EntryID $DraftEntryID
+        if ($mail.Sent) { Stop-WithError "-DraftEntryID points to a sent item, not a draft." }
+        $isNew = $false
     } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an email." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-reply.ps1 -EntryID ""00000000..."" -Body ""message""" -ForegroundColor Gray
+        $target = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
+        $original = "$($target.Subject) ($($target.EntryID))"
+        $mail = if ($ReplyAll) { $target.ReplyAll() } else { $target.Reply() }
+        $isNew = $true
+        if (-not $Body -and -not $HtmlFile) { Stop-WithError "Give the reply text with -Body (or -HtmlFile)." }
     }
 
-    if ($targetEmail) {
-        # Sender email with Exchange fallback
-        $senderAddr = $targetEmail.SenderEmailAddress
-        if ($senderAddr -match "/O=") { $senderAddr = $targetEmail.SenderName }
-
-        # Create reply
-        if ($ReplyAll) {
-            $reply = $targetEmail.ReplyAll()
-            $replyType = "Reply All"
-        } else {
-            $reply = $targetEmail.Reply()
-            $replyType = "Reply"
+    if ($Body -or $HtmlFile) {
+        if (-not $isNew) {
+            $editOk = $Confirm -or -not (Test-ConfirmRequired -Action "edit-draft")
+            if (-not $editOk) {
+                Write-ComposeSummary -Mail $mail -Title "PREVIEW (draft not changed)" -Json:$Json -Action "edit-draft"
+                if (-not $Json) { Approve-Action -Action "edit-draft" -Confirmed $false -What "replacing the reply text" | Out-Null }
+                exit 0
+            }
         }
-
-        # HTML-aware body insertion
-        Add-Type -AssemblyName System.Web
-        if ($reply.BodyFormat -eq 2) {
-            # HTML format - wrap reply body in HTML and prepend
-            $htmlBody = "<div style='font-family:Calibri,sans-serif;font-size:11pt;'>$([System.Web.HttpUtility]::HtmlEncode($Body).Replace("`n","<br>"))</div><br>"
-            $reply.HTMLBody = $htmlBody + $reply.HTMLBody
+        if ([int]$mail.BodyFormat -eq 2) {
+            $content = Get-ComposeBody -Body $Body -HTML:$HTML -HtmlFile $HtmlFile -Native:(-not $HTML -and -not $HtmlFile)
+            Set-ReplyBlock -Item $mail -Html $content.Html -RemoveAutoSignature:$RemoveAutoSignature
         } else {
-            # Plain text
-            $reply.Body = $Body + "`n`n" + $reply.Body
-        }
-
-        # Body preview for display
-        $bodyPreview = $Body
-        if ($bodyPreview.Length -gt 200) {
-            $bodyPreview = $bodyPreview.Substring(0, 200) + "..."
-        }
-        if ($StripLinks) { $bodyPreview = Strip-Links $bodyPreview }
-
-        if ($Confirm) {
-            # Show confirmation summary before sending
-            Write-Host "`n=== $replyType CONFIRMATION ===" -ForegroundColor Yellow
-            Write-Host "Original: $($targetEmail.Subject)" -ForegroundColor Yellow
-            Write-Host "From: $($targetEmail.SenderName) <$senderAddr>"
-            Write-Host "To: $($reply.To)" -ForegroundColor Gray
-            if ($reply.CC) {
-                Write-Host "CC: $($reply.CC)" -ForegroundColor Gray
-            }
-            if ($reply.BCC) {
-                Write-Host "BCC: $($reply.BCC)" -ForegroundColor Gray
-            }
-            Write-Host "`nYour reply:" -ForegroundColor Cyan
-            Write-Host $bodyPreview
-
-            $reply.Send()
-            Write-Host "`n=== $replyType SENT ===" -ForegroundColor Green
-        } else {
-            # Save as draft
-            $reply.Save()
-
-            Write-Host "`n=== $replyType DRAFT CREATED ===" -ForegroundColor Green
-            Write-Host "Original: $($targetEmail.Subject)" -ForegroundColor Yellow
-            Write-Host "From: $($targetEmail.SenderName) <$senderAddr>"
-            Write-Host "To: $($reply.To)" -ForegroundColor Gray
-            if ($reply.CC) {
-                Write-Host "CC: $($reply.CC)" -ForegroundColor Gray
-            }
-            if ($reply.BCC) {
-                Write-Host "BCC: $($reply.BCC)" -ForegroundColor Gray
-            }
-            Write-Host "`nYour reply:" -ForegroundColor Cyan
-            Write-Host $bodyPreview
-            Write-Host "`nDraft saved. Check your Drafts folder." -ForegroundColor Yellow
+            if (-not $isNew) { Stop-WithError "This draft is plain text; rewrite it with outlook-draft-update.ps1 -Body." }
+            $mail.Body = $Body + "`r`n`r`n" + $mail.Body
         }
     }
+
+    foreach ($pair in @(@($AddTo, 1), @($AddCC, 2), @($AddBCC, 3))) {
+        foreach ($addr in ($pair[0] -split ';')) { if ($addr.Trim()) { $r = $mail.Recipients.Add($addr.Trim()); $r.Type = $pair[1] } }
+    }
+    foreach ($f in $Attachment) {
+        if (-not $f) { continue }
+        if (-not (Test-Path -LiteralPath $f)) { throw "Attachment not found: $f" }
+        [void]$mail.Attachments.Add((Resolve-Path -LiteralPath $f).Path)
+    }
+    Assert-OutlookRecipients $mail
+
+    $kind = if ($ReplyAll) { "REPLY ALL" } else { "REPLY" }
+    if ($wantSend) {
+        if (-not ($Confirm -or -not (Test-ConfirmRequired -Action "send"))) {
+            $mail.Save()
+            Write-ComposeSummary -Mail $mail -Title "$kind DRAFT SAVED (not sent)" -Original $original -Json:$Json -Action "reply"
+            if (-not $Json) { Approve-Action -Action "send" -Confirmed $false -What "sending" | Out-Null }
+            exit 0
+        }
+        $summary = $mail
+        $mail.Send()
+        Write-ComposeSummary -Mail $summary -Title "$kind SENT" -Original $original -Json:$Json -Action "reply"
+        exit 0
+    }
+    $mail.Save()
+    if ($Display) { $mail.Display() }
+    Write-ComposeSummary -Mail $mail -Title "$kind DRAFT SAVED" -Original $original -Json:$Json -Action "reply" `
+        -Next "Change text: -DraftEntryID <EntryID> -Body ""..."" -Confirm. Send: -DraftEntryID <EntryID> -Send -Confirm"
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($reply) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($reply) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

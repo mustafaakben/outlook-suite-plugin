@@ -1,165 +1,51 @@
 param(
     [string]$EntryID = "",
+    [string]$StoreID = "",
     [int]$Index = 0,
-
     [int]$Days = 7,
     [switch]$Permanent,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Delete Email Script
-# Usage: .\outlook-delete.ps1 -EntryID "00000000..." -Confirm (preferred)
-# Usage: .\outlook-delete.ps1 -Index 1 -Confirm (fallback)
+# Outlook Delete: move an email to Deleted Items, or purge it (-Permanent, cannot be undone).
+# Irreversible action: previews unless -Confirm (or confirmation for "delete" is turned off;
+# see SKILL.md "Confirmation").
+# Usage: .\outlook-delete.ps1 -EntryID "00000000..." -Confirm
+# Usage: .\outlook-delete.ps1 -EntryID "00000000..." -Permanent -Confirm
 
-$Outlook = $null
-$Namespace = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
+    $mode = if ($Permanent) { "PERMANENT DELETE (cannot be undone)" } else { "DELETE (move to Deleted Items)" }
+    if (-not (Confirm-ItemAction -Action "delete" -Title $mode -Item $email -Confirmed $Confirm -What "the delete")) { exit 0 }
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetEmail = $null
-
-    if ($EntryID) {
-        $targetEmail = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetEmail) {
-            Write-Host "ERROR: Email not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-find.ps1 to get valid EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        $Inbox = $Namespace.GetDefaultFolder(6)
-        $since = (Get-Date).AddDays(-$Days).ToString("g")
-        $filter = "[ReceivedTime] >= '$since'"
-        $items = $Inbox.Items.Restrict($filter)
-        $items.Sort("[ReceivedTime]", $true)
-
-        $count = 0
-        foreach ($email in $items) {
-            $count++
-            if ($count -eq $Index) {
-                $targetEmail = $email
-                break
-            }
-        }
-
-        if (-not $targetEmail) {
-            Write-Host "`nEmail at index $Index not found in last $Days days." -ForegroundColor Red
-            Write-Host "Use outlook-read.ps1 -Days $Days to see available emails." -ForegroundColor Gray
-            Write-Host "Tip: Try increasing -Days if the email is older." -ForegroundColor Gray
-        }
+    $rec = ConvertTo-MailRecord $email
+    if (-not $Permanent) {
+        $email.Delete()
+        if ($Json) { Write-Json ([ordered]@{ Action = "delete"; Result = "deleted"; EntryID = $rec.EntryID; Subject = $rec.Subject; Folder = $rec.Folder; Permanent = $false }); exit 0 }
+        Write-Host "=== EMAIL DELETED (moved to Deleted Items) ===" -ForegroundColor Green
     } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an email." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-delete.ps1 -EntryID ""00000000..."" -Confirm" -ForegroundColor Gray
+        # Purge = delete from Deleted Items. Move there first, then re-open by the new
+        # EntryID so the exact message (and nothing else) is removed.
+        $deleted = $Namespace.GetDefaultFolder(3)
+        $inDeleted = $false
+        try { $inDeleted = ($email.Parent.EntryID -eq $deleted.EntryID -and $email.Parent.StoreID -eq $deleted.StoreID) } catch { }
+        $victim = if ($inDeleted) { $email } else { $email.Move($deleted) }
+        if (-not $victim) { Stop-WithError "Could not move the message to Deleted Items; nothing was purged." }
+        $victim = $Namespace.GetItemFromID($victim.EntryID, $deleted.StoreID)
+        $victim.Delete()
+        if ($Json) { Write-Json ([ordered]@{ Action = "delete"; Result = "purged"; EntryID = $rec.EntryID; Subject = $rec.Subject; Folder = $rec.Folder; Permanent = $true }); exit 0 }
+        Write-Host "=== EMAIL PERMANENTLY DELETED ===" -ForegroundColor Green
     }
-
-    if ($targetEmail) {
-        # Get sender email with Exchange fallback
-        $senderAddr = $targetEmail.SenderEmailAddress
-        if ($senderAddr -match "^/O=") { $senderAddr = $targetEmail.SenderName }
-
-        $subject = $targetEmail.Subject
-        $senderName = $targetEmail.SenderName
-        $date = $targetEmail.ReceivedTime.ToString("g")
-
-        # Show preview
-        $deleteType = if ($Permanent) { "PERMANENT DELETE" } else { "DELETE (move to Deleted Items)" }
-        Write-Host "`n=== $deleteType PREVIEW ===" -ForegroundColor Yellow
-        Write-Host "Subject: $subject" -ForegroundColor White
-        Write-Host "From: $senderName <$senderAddr>"
-        Write-Host "Date: $date"
-
-        if ($Permanent) {
-            Write-Host "`n[!] WARNING: Permanent delete cannot be undone!" -ForegroundColor Red
-        }
-
-        if (-not $Confirm) {
-            Write-Host "`n[!] Add -Confirm to actually delete this email." -ForegroundColor Cyan
-        } else {
-            if ($Permanent) {
-                $deletedItems = $Namespace.GetDefaultFolder(3)
-                $deletedStoreID = $null
-                $deletedFolderEntryID = $null
-                try { $deletedStoreID = $deletedItems.StoreID } catch {}
-                try { $deletedFolderEntryID = $deletedItems.EntryID } catch {}
-
-                $targetStoreID = $null
-                $targetFolderEntryID = $null
-                try { $targetStoreID = $targetEmail.Parent.StoreID } catch {}
-                try { $targetFolderEntryID = $targetEmail.Parent.EntryID } catch {}
-
-                $emailForPermanentDelete = $null
-                $idForPermanentDelete = $null
-                $storeForPermanentDelete = $null
-
-                $alreadyInDeletedItems = $false
-                if ($targetStoreID -and $deletedStoreID -and $targetFolderEntryID -and $deletedFolderEntryID) {
-                    $alreadyInDeletedItems = ($targetStoreID -eq $deletedStoreID -and $targetFolderEntryID -eq $deletedFolderEntryID)
-                }
-
-                if ($alreadyInDeletedItems) {
-                    try { $idForPermanentDelete = $targetEmail.EntryID } catch {}
-                    $storeForPermanentDelete = $deletedStoreID
-                    $emailForPermanentDelete = $targetEmail
-                } else {
-                    try {
-                        $movedEmail = $targetEmail.Move($deletedItems)
-                        if ($movedEmail) {
-                            try { $idForPermanentDelete = $movedEmail.EntryID } catch {}
-                            try { $storeForPermanentDelete = $movedEmail.Parent.StoreID } catch {}
-                            if (-not $storeForPermanentDelete) {
-                                $storeForPermanentDelete = $deletedStoreID
-                            }
-                            $emailForPermanentDelete = $movedEmail
-                        }
-                    } catch {
-                        Write-Host "`n[SAFE-FAIL] Could not move the message to Deleted Items for permanent deletion." -ForegroundColor Yellow
-                        Write-Host "No permanent delete was performed." -ForegroundColor Gray
-                    }
-                }
-
-                if ($idForPermanentDelete -and $storeForPermanentDelete) {
-                    try {
-                        $resolvedEmail = $Namespace.GetItemFromID($idForPermanentDelete, $storeForPermanentDelete)
-                        if ($resolvedEmail) {
-                            $emailForPermanentDelete = $resolvedEmail
-                        }
-                    } catch { }
-                }
-
-                if ($emailForPermanentDelete) {
-                    $emailForPermanentDelete.Delete()
-                    Write-Host "`n[OK] EMAIL PERMANENTLY DELETED" -ForegroundColor Green
-                } else {
-                    Write-Host "`n[SAFE-FAIL] Permanent delete was not completed because message identity could not be verified." -ForegroundColor Yellow
-                    Write-Host "Message was not permanently purged to avoid deleting an ambiguous item." -ForegroundColor Gray
-                }
-            } else {
-                $targetEmail.Delete()
-                Write-Host "`n[OK] EMAIL DELETED (moved to Deleted Items)" -ForegroundColor Green
-            }
-
-            Write-Host "Subject: $subject" -ForegroundColor Yellow
-            Write-Host "From: $senderName <$senderAddr>"
-            Write-Host "Date: $date"
-        }
-    }
+    Write-Host "  EntryID (no longer valid): $($rec.EntryID)"
+    Write-Host "  Subject: $($rec.Subject)" -ForegroundColor Yellow
+    Write-Host "  From: $($rec.From)"
+    Write-Host "  Date: $(Format-MailDate $rec.Date)"
+    Write-Host "  Was in: $($rec.Folder)" -ForegroundColor DarkGray
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Namespace) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

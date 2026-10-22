@@ -1,61 +1,33 @@
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$Name
+    [Parameter(Mandatory = $true)]
+    [string]$Name,
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Category Deleter
-# Usage: .\outlook-delete-category.ps1 -Name "Category Name"
-# Deletes a category from the master category list
+# Outlook Delete Category: remove a category from the master list.
+# Emails that use it keep the name as text but lose the color. Irreversible: previews unless -Confirm.
+# Usage: .\outlook-delete-category.ps1 -Name "Old Project" -Confirm
 
-$Outlook = $null
-$Namespace = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
+    $null = Connect-Outlook
+    $idx = 0; $found = $null; $i = 0
+    foreach ($c in $Namespace.Categories) { $i++; if ($c.Name -ieq $Name) { $found = $c; $idx = $i; break } }
+    if (-not $found) { Stop-WithError "Category '$Name' not found. See outlook-list-categories.ps1." }
+    $color = $script:CategoryColors[[int]$found.Color]
+    if (-not ($Confirm -or -not (Test-ConfirmRequired -Action "category-delete"))) {
+        Write-Host "=== DELETE CATEGORY (PREVIEW) ===" -ForegroundColor Yellow
+        Write-Host "  Name: $($found.Name)   Color: $color"
+        Approve-Action -Action "category-delete" -Confirmed $false -What "deleting the category" | Out-Null
+        exit 0
     }
-
-    $Namespace = $Outlook.GetNamespace("MAPI")
-
-    # Find the category
-    $targetIndex = -1
-    $index = 1
-    foreach ($cat in $Namespace.Categories) {
-        if ($cat.Name -eq $Name) {
-            $targetIndex = $index
-            break
-        }
-        $index++
-    }
-
-    if ($targetIndex -eq -1) {
-        Write-Host "`nCategory '$Name' not found." -ForegroundColor Red
-        Write-Host "`nAvailable categories:" -ForegroundColor Yellow
-        foreach ($cat in $Namespace.Categories) {
-            Write-Host "  - $($cat.Name)" -ForegroundColor Gray
-        }
-    } else {
-        # Delete the category
-        $Namespace.Categories.Remove($targetIndex)
-
-        Write-Host "`n=== CATEGORY DELETED ===" -ForegroundColor Green
-        Write-Host "Name: $Name" -ForegroundColor Yellow
-    }
+    $Namespace.Categories.Remove($idx)
+    if ($Json) { Write-Json ([ordered]@{ Result = "deleted"; Name = $found.Name; Color = $color }); exit 0 }
+    Write-Host "=== CATEGORY DELETED ===" -ForegroundColor Green
+    Write-Host "  Name: $Name   Color was: $color"
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Namespace) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

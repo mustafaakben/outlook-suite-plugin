@@ -1,247 +1,40 @@
 param(
+    [string]$Mailbox = "",
+    [string]$Name = "",
     [switch]$Enabled,
     [switch]$Detailed,
-    [bool]$StripLinks = $true
+    [switch]$Json,
+    [bool]$StripLinks = $true   # legacy, ignored
 )
 
-# Helper: strip URLs from text to reduce context window bloat
-function Strip-Links([string]$text) {
-    if (-not $text) { return $text }
-    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
-}
+# Outlook Rules List: rules of a mailbox in execution order. -Detailed shows every condition,
+# exception and action (including ones made in the Rules Wizard that scripts cannot create).
+# -Mailbox picks another mailbox in the profile (default: your default mailbox).
+# -Name filters by name (substring).
+# Usage: .\outlook-rules-list.ps1 -Detailed
+# Usage: .\outlook-rules-list.ps1 -Mailbox "someone@x.com" -Enabled
 
-# Outlook Rules List Script
-# List email rules
-# Usage: .\outlook-rules-list.ps1
-# Only enabled rules: .\outlook-rules-list.ps1 -Enabled
-# With details: .\outlook-rules-list.ps1 -Detailed
-
-$Outlook = $null
-$Namespace = $null
-$rules = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $store = Get-RuleStore -Namespace $Namespace -Mailbox $Mailbox
+    $rules = Get-StoreRules $store
+    $records = @(for ($i = 1; $i -le $rules.Count; $i++) {
+        $r = $rules.Item($i)
+        if ($Enabled -and -not $r.Enabled) { continue }
+        if ($Name -and $r.Name -notlike "*$Name*") { continue }
+        ConvertTo-RuleRecord $r
+    }) | Sort-Object { $_.Order }
+    $on = @(for ($i = 1; $i -le $rules.Count; $i++) { if ($rules.Item($i).Enabled) { 1 } }).Count
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-
-    # Get rules
-    $rules = $Namespace.DefaultStore.GetRules()
-
-    Write-Host "`n=== OUTLOOK RULES ===" -ForegroundColor Cyan
-
-    if ($Enabled) {
-        Write-Host "(Showing only enabled rules)" -ForegroundColor Gray
-    }
-
-    Write-Host ""
-
-    $count = 0
-    $displayed = 0
-    $enabledCount = 0
-
-    foreach ($rule in $rules) {
-        $count++
-
-        if ($rule.Enabled) { $enabledCount++ }
-
-        # Filter by enabled status
-        if ($Enabled -and -not $rule.Enabled) {
-            continue
-        }
-
-        $displayed++
-
-        # Status indicator
-        $status = if ($rule.Enabled) { "[ON] " } else { "[OFF]" }
-        $statusColor = if ($rule.Enabled) { "Green" } else { "Gray" }
-
-        Write-Host "$displayed. " -NoNewline
-        Write-Host $status -NoNewline -ForegroundColor $statusColor
-        Write-Host " $($rule.Name)" -ForegroundColor Yellow
-
-        if ($Detailed) {
-            # Show conditions
-            $conditions = $rule.Conditions
-            $conditionsList = [System.Collections.ArrayList]::new()
-
-            try {
-                if ($conditions.From.Enabled) {
-                    $fromAddresses = [System.Collections.ArrayList]::new()
-                    foreach ($recipient in $conditions.From.Recipients) {
-                        [void]$fromAddresses.Add($recipient.Address)
-                    }
-                    if ($fromAddresses.Count -gt 0) {
-                        [void]$conditionsList.Add("From: $($fromAddresses -join ', ')")
-                    }
-                }
-            } catch {}
-
-            try {
-                if ($conditions.Subject.Enabled) {
-                    [void]$conditionsList.Add("Subject contains: $($conditions.Subject.Text -join ', ')")
-                }
-            } catch {}
-
-            try {
-                if ($conditions.SentTo.Enabled) {
-                    $toAddresses = [System.Collections.ArrayList]::new()
-                    foreach ($recipient in $conditions.SentTo.Recipients) {
-                        [void]$toAddresses.Add($recipient.Address)
-                    }
-                    if ($toAddresses.Count -gt 0) {
-                        [void]$conditionsList.Add("Sent to: $($toAddresses -join ', ')")
-                    }
-                }
-            } catch {}
-
-            try {
-                if ($conditions.HasAttachment.Enabled) {
-                    [void]$conditionsList.Add("Has attachment")
-                }
-            } catch {}
-
-            try {
-                if ($conditions.Importance.Enabled) {
-                    $imp = switch ($conditions.Importance.Importance) {
-                        0 { "Low" }
-                        1 { "Normal" }
-                        2 { "High" }
-                    }
-                    [void]$conditionsList.Add("Importance: $imp")
-                }
-            } catch {}
-
-            if ($conditionsList.Count -gt 0) {
-                Write-Host "      Conditions:" -ForegroundColor Cyan
-                foreach ($cond in $conditionsList) {
-                    $condDisplay = if ($StripLinks) { Strip-Links $cond } else { $cond }
-                    Write-Host "        - $condDisplay" -ForegroundColor Gray
-                }
-            }
-
-            # Show actions
-            $actions = $rule.Actions
-            $actionsList = [System.Collections.ArrayList]::new()
-
-            try {
-                if ($actions.MoveToFolder.Enabled) {
-                    try {
-                        $folderPath = $actions.MoveToFolder.Folder.FolderPath
-                        [void]$actionsList.Add("Move to: $folderPath")
-                    } catch {
-                        [void]$actionsList.Add("Move to: (folder unavailable)")
-                    }
-                }
-            } catch {}
-
-            try {
-                if ($actions.CopyToFolder.Enabled) {
-                    try {
-                        $folderPath = $actions.CopyToFolder.Folder.FolderPath
-                        [void]$actionsList.Add("Copy to: $folderPath")
-                    } catch {
-                        [void]$actionsList.Add("Copy to: (folder unavailable)")
-                    }
-                }
-            } catch {}
-
-            try {
-                if ($actions.Delete.Enabled) {
-                    [void]$actionsList.Add("Delete")
-                }
-            } catch {}
-
-            try {
-                if ($actions.DeletePermanently.Enabled) {
-                    [void]$actionsList.Add("Delete permanently")
-                }
-            } catch {}
-
-            try {
-                if ($actions.Forward.Enabled) {
-                    $fwdAddresses = [System.Collections.ArrayList]::new()
-                    foreach ($recipient in $actions.Forward.Recipients) {
-                        [void]$fwdAddresses.Add($recipient.Address)
-                    }
-                    if ($fwdAddresses.Count -gt 0) {
-                        [void]$actionsList.Add("Forward to: $($fwdAddresses -join ', ')")
-                    }
-                }
-            } catch {}
-
-            try {
-                if ($actions.MarkAsTask.Enabled) {
-                    [void]$actionsList.Add("Mark as task")
-                }
-            } catch {}
-
-            try {
-                if ($actions.AssignToCategory.Enabled) {
-                    $categories = $actions.AssignToCategory.Categories -join ", "
-                    [void]$actionsList.Add("Assign category: $categories")
-                }
-            } catch {}
-
-            try {
-                if ($actions.MarkRead.Enabled) {
-                    [void]$actionsList.Add("Mark as read")
-                }
-            } catch {}
-
-            try {
-                if ($actions.Stop.Enabled) {
-                    [void]$actionsList.Add("Stop processing more rules")
-                }
-            } catch {}
-
-            if ($actionsList.Count -gt 0) {
-                Write-Host "      Actions:" -ForegroundColor Cyan
-                foreach ($act in $actionsList) {
-                    $actDisplay = if ($StripLinks) { Strip-Links $act } else { $act }
-                    Write-Host "        - $actDisplay" -ForegroundColor Gray
-                }
-            }
-
-            # Execution order
-            Write-Host "      Execution Order: $($rule.ExecutionOrder)" -ForegroundColor DarkGray
-        }
-
-        Write-Host ""
-    }
-
-    if ($displayed -eq 0) {
-        if ($Enabled) {
-            Write-Host "No enabled rules found." -ForegroundColor Gray
-            Write-Host "Use outlook-rules-create.ps1 to create a new rule." -ForegroundColor Gray
-        } else {
-            Write-Host "No rules found." -ForegroundColor Gray
-            Write-Host "Use outlook-rules-create.ps1 to create a new rule." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "--- $displayed rule(s) shown ($enabledCount enabled of $count total) ---" -ForegroundColor Cyan
-    }
+    if ($Json) { Write-Json ([ordered]@{ mailbox = $store.DisplayName; total = $rules.Count; enabled = $on; count = @($records).Count; rules = @($records) }); exit 0 }
+    Write-Host "=== RULES: $($store.DisplayName) ===" -ForegroundColor Cyan
+    Write-Host "$($rules.Count) rules, $on on$(if ($Enabled -or $Name) { "; showing $(@($records).Count)" })" -ForegroundColor Gray
+    foreach ($r in $records) { Write-RuleRecord $r -Detailed:$Detailed }
+    if ($rules.Count -eq 0) { Write-Host "No rules. Create one with outlook-rules-create.ps1." -ForegroundColor Gray }
+    elseif (-not $Detailed) { Write-Host "Add -Detailed for conditions and actions. Change rules with outlook-rules-manage.ps1." -ForegroundColor DarkGray }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Note: Rules access requires Outlook to be fully initialized." -ForegroundColor Gray
-}
-finally {
-    if ($rules) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($rules) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

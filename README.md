@@ -52,7 +52,7 @@ claude plugin validate plugins/outlook-suite
 
 - Windows 10/11
 - Microsoft Outlook desktop installed
-- PowerShell 5.1+
+- PowerShell 5.1+ (PowerShell 7 `pwsh` for the mail warm host)
 - Outlook profile configured with mailbox access
 - Claude Code with plugin support (`/plugin ...` commands)
 
@@ -62,10 +62,24 @@ Optional (feature-dependent):
 ## Safety Model
 
 The suite follows strict operational safety patterns:
-- Prefer stable `EntryID` targeting over volatile indexes
-- Require explicit confirmation flags for send/delete/print-sensitive operations
+- Prefer `EntryID` targeting over volatile indexes
+- Require explicit confirmation for irreversible or outward-facing operations
 - Favor draft-first workflows for outgoing email
 - Align docs with actual script behavior and safety gates
+
+## Confirmation (mail)
+
+Every irreversible or outward-facing mail action is available to agents: send, send-as, send a draft, schedule send, reply/forward send, delete (and permanent delete), recall, rules, folder rename/move/delete/empty, bulk actions, category deletion, out-of-office, junk lists, signatures, reminder dismiss, conversation always-rules, print. Each one checks a confirmation flag. Without confirmation the script prints `PREVIEW ONLY: ... was NOT done.`, describes exactly what it would do, and exits 0. Reversible actions (drafts, move, copy, flags, categories, mark read) act immediately.
+
+The flag is the user's choice and can be changed at three levels (first match wins):
+
+1. Per call: add `-Confirm`.
+2. Per shell: `$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "0"` turns confirmation off, `"1"` forces it on.
+3. Per user: `%APPDATA%\outlook-suite\config.json`, for example `{ "requireConfirm": true, "actions": { "send": true, "bulk": false } }`. The action names are listed in `plugins/outlook-suite/skills/outlook-mail/SKILL.md`.
+
+With nothing configured, confirmation is required. Agents are told to ask the user before passing `-Confirm`.
+
+All mail scripts exit 1 with an `Error: ...` line on failure, and accept `-Json` for machine-readable output.
 
 ## Local Script Usage (Optional)
 
@@ -77,8 +91,14 @@ cd plugins/outlook-suite/skills/outlook-mail
 # Find candidate emails and capture EntryID
 & ".\scripts\outlook-find.ps1" -Days 2 -From "john@example.com"
 
-# Reply by EntryID
+# Reply by EntryID (saved as a draft in the thread; prints the draft's EntryID)
 & ".\scripts\outlook-reply.ps1" -EntryID "00000000..." -Body "Thanks, received."
+
+# Send the reviewed draft
+& ".\scripts\outlook-send-draft.ps1" -EntryID "<draft EntryID>" -Confirm
+
+# Same scripts through the warm host (faster for repeated calls)
+& ".\scripts\outlook-call.ps1" find -Days 2 -UnreadOnly
 ```
 
 ## Module Documentation

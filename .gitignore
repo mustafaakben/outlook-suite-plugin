@@ -7,3 +7,6 @@ Thumbs.db
 .DS_Store
 *.tmp
 *.log
+
+# Test output (never commit: contains mailbox data)
+tests/out/

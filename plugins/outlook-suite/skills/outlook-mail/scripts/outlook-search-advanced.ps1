@@ -1,176 +1,136 @@
 param(
+    [Alias("Folder")]
+    [string]$Folders = "",
+    [switch]$IncludeSubfolders,
+    [switch]$WholeMailbox,
+    [string]$Mailbox = "",
+    [switch]$AllMailboxes,
     [string]$Subject = "",
     [string]$From = "",
     [string]$To = "",
-    [string]$Body = "",
+    [Alias("Body")]
+    [string]$BodyContains = "",
+    [switch]$FastBody,
+    [int]$Days = 30,
     [datetime]$DateFrom,
     [datetime]$DateTo,
-    [ValidateSet("", "Low", "Normal", "High")]
-    [string]$Importance = "",
+    [Alias("Unread")]
+    [switch]$UnreadOnly,
     [switch]$HasAttachment,
     [switch]$Flagged,
-    [switch]$Unread,
+    [ValidateSet("", "Low", "Normal", "High")]
+    [string]$Importance = "",
     [string]$Category = "",
-    [string]$Folder = "Inbox",
-    [int]$Limit = 20
+    [int]$Limit = 50,
+    [string]$SaveAs = "",
+    [switch]$Json
 )
 
-# Outlook Advanced Search Script
-# Usage: .\outlook-search-advanced.ps1 -HasAttachment -Unread -Limit 10
-# Date range: .\outlook-search-advanced.ps1 -DateFrom "2026-01-01" -DateTo "2026-01-31"
+# Outlook Advanced Search: one search across many folders, subfolders or whole mailboxes,
+# results merged newest first, each with its folder. Same filters as outlook-find.ps1.
+#   Scope: -Folders "Inbox;Sent;Archive/2025" (default Inbox + Sent Items)
+#          -IncludeSubfolders   also every folder below them
+#          -WholeMailbox        every mail folder of the default mailbox (or -Mailbox)
+#          -AllMailboxes        every mail folder of every mailbox (public folders excluded)
+#   -SaveAs "Name"   also creates an Outlook Search Folder with these criteria (one mailbox).
+# Usage: .\outlook-search-advanced.ps1 -Subject "budget" -WholeMailbox -Days 365
+# Usage: .\outlook-search-advanced.ps1 -From "jane" -Folders "Inbox;Archive" -IncludeSubfolders -HasAttachment
 
-$importanceMap = @{
-    "Low" = 0
-    "Normal" = 1
-    "High" = 2
-}
+. (Join-Path $PSScriptRoot "_common.ps1")
 
-$Outlook = $null
 try {
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $range = Resolve-DateRange -Days $Days -DateFrom $DateFrom -DateTo $DateTo
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-
-    # Get folder
-    $targetFolder = $null
-    if ($Folder -eq "Inbox") {
-        $targetFolder = $Namespace.GetDefaultFolder(6)
-    } elseif ($Folder -eq "Sent") {
-        $targetFolder = $Namespace.GetDefaultFolder(5)
-    } elseif ($Folder -eq "Drafts") {
-        $targetFolder = $Namespace.GetDefaultFolder(16)
+    # Folders in scope.
+    $scope = New-Object System.Collections.Generic.List[object]
+    if ($AllMailboxes) {
+        foreach ($s in (Get-SearchStores -Namespace $Namespace)) { try { foreach ($f in (Get-MailSubfolders $s.GetRootFolder())) { $scope.Add($f) } } catch { } }
+    } elseif ($WholeMailbox) {
+        $store = Get-RuleStore -Namespace $Namespace -Mailbox $Mailbox
+        foreach ($f in (Get-MailSubfolders $store.GetRootFolder())) { $scope.Add($f) }
     } else {
-        # Recursive search for folder by name
-        function Find-OutlookFolder($parent, $name) {
-            foreach ($f in $parent.Folders) {
-                if ($f.Name -eq $name) { return $f }
-                $sub = Find-OutlookFolder $f $name
-                if ($sub) { return $sub }
-            }
-            return $null
-        }
-        foreach ($account in $Namespace.Folders) {
-            $targetFolder = Find-OutlookFolder $account $Folder
-            if ($targetFolder) { break }
+        $names = if ($Folders) { @($Folders -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @("Inbox", "Sent") }
+        foreach ($n in $names) {
+            $p = if ($Mailbox -and $n -notmatch '/') { "$Mailbox/$n" } else { $n }
+            $f = $null
+            try { $f = Resolve-OutlookFolder -Namespace $Namespace -Path $p } catch { if ($Mailbox) { $f = Resolve-OutlookFolder -Namespace $Namespace -Path $n } else { throw } }
+            $scope.Add($f)
+            if ($IncludeSubfolders) { foreach ($c in (Get-MailSubfolders $f)) { $scope.Add($c) } }
         }
     }
+    $seen = @{}; $unique = @(foreach ($f in $scope) { if (-not $seen.ContainsKey($f.EntryID)) { $seen[$f.EntryID] = 1; $f } })
 
-    if (-not $targetFolder) {
-        $targetFolder = $Namespace.GetDefaultFolder(6)
-        Write-Host "Folder '$Folder' not found, using Inbox." -ForegroundColor Yellow
+    $q = @{ From = $range[0]; Subject = $Subject; Sender = $From; Recipient = $To; BodyContains = $BodyContains; FastBody = $FastBody
+        UnreadOnly = $UnreadOnly; HasAttachment = $HasAttachment; Flagged = $Flagged; Importance = $Importance; Category = $Category; Limit = $Limit }
+    if ($range[1]) { $q.To = $range[1] }
+
+    $all = New-Object System.Collections.Generic.List[object]
+    $total = 0; $searched = 0; $skipped = 0
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($f in $unique) {
+        try {
+            if ($f.Items.Count -eq 0) { continue }
+            $res = Find-MailRecords -Folder $f @q
+            $total += $res.Total; $searched++
+            foreach ($r in $res.Records) { $all.Add($r) }
+        } catch { $skipped++ }
+    }
+    $sorted = @($all | Sort-Object { [datetime]$_.Date } -Descending | Select-Object -First $Limit)
+    $result = [pscustomobject]@{ Total = $total; Records = $sorted }
+
+    $saved = ""
+    if ($SaveAs) {
+        $filter = (New-MailDaslFilter -From $range[0] -Subject $Subject -Sender $From -Recipient $To -UnreadOnly:$UnreadOnly -HasAttachment:$HasAttachment -Flagged:$Flagged -Importance $Importance -Category $Category -BodyIndexed $(if ($BodyContains) { $BodyContains } else { "" })) -replace '^@SQL=', ''
+        $storeId = $unique[0].StoreID
+        $paths = @($unique | Where-Object { $_.StoreID -eq $storeId } | Select-Object -First 30 | ForEach-Object { "'$($_.FolderPath)'" }) -join ","
+        $search = $Outlook.AdvancedSearch($paths, $filter, [bool]$IncludeSubfolders, "suite-$SaveAs")
+        $null = $search.Save($SaveAs)
+        $saved = $SaveAs
     }
 
-    # Adjust DateTo to end of day (user expects full day included)
-    if ($DateTo) {
-        $DateTo = $DateTo.Date.AddDays(1).AddSeconds(-1)
-    }
-
-    Write-Host "`n=== ADVANCED SEARCH ===" -ForegroundColor Cyan
-    Write-Host "Searching in: $($targetFolder.Name)" -ForegroundColor Gray
-
-    # Build filter criteria display (only show active filters)
-    $criteria = @()
+    $criteria = @("Folders searched: $searched$(if ($skipped) { " ($skipped skipped)" }) in $($sw.ElapsedMilliseconds) ms", "Since: $(Format-MailDate $range[0])")
     if ($Subject) { $criteria += "Subject: '$Subject'" }
-    if ($From) { $criteria += "From: '$From'" }
-    if ($To) { $criteria += "To: '$To'" }
-    if ($Body) { $criteria += "Body: '$Body'" }
-    if ($DateFrom) { $criteria += "From date: $($DateFrom.ToString('yyyy-MM-dd'))" }
-    if ($DateTo) { $criteria += "To date: $($DateTo.ToString('yyyy-MM-dd'))" }
-    if ($Importance) { $criteria += "Importance: $Importance" }
-    if ($HasAttachment) { $criteria += "Has attachment" }
+    if ($From) { $criteria += "Sender: '$From'" }
+    if ($To) { $criteria += "Recipient: '$To'" }
+    if ($BodyContains) { $criteria += "Body: '$BodyContains'$(if ($FastBody) { ' (indexed)' })" }
+    if ($UnreadOnly) { $criteria += "Unread only" }
+    if ($HasAttachment) { $criteria += "Has attachments" }
     if ($Flagged) { $criteria += "Flagged" }
-    if ($Unread) { $criteria += "Unread" }
+    if ($Importance) { $criteria += "Importance: $Importance" }
     if ($Category) { $criteria += "Category: '$Category'" }
+    if ($saved) { $criteria += "Saved as Search Folder: '$saved'" }
 
-    if ($criteria.Count -gt 0) {
-        Write-Host "Filters: $($criteria -join ' | ')" -ForegroundColor Gray
+    if ($Json) {
+        Write-Json ([ordered]@{ total = $total; count = $sorted.Count; foldersSearched = $searched; query = $criteria; savedSearchFolder = $saved
+            items = @($sorted | ForEach-Object { $o = ConvertTo-JsonRecord $_; $o }) })
+        exit 0
     }
+    Write-Host "=== ADVANCED SEARCH ===" -ForegroundColor Cyan
+    Write-Host "Filters: $($criteria -join ' | ')" -ForegroundColor Gray
     Write-Host ""
-
-    # Build JET date pre-filter for server-side narrowing
-    $filterParts = @()
-    if ($DateFrom) {
-        $fromStr = $DateFrom.ToString("g")
-        $filterParts += "[ReceivedTime] >= '$fromStr'"
-    }
-    if ($DateTo) {
-        $toStr = $DateTo.ToString("g")
-        $filterParts += "[ReceivedTime] <= '$toStr'"
-    }
-
-    $items = $targetFolder.Items
-    if ($filterParts.Count -gt 0) {
-        $jetFilter = $filterParts -join " AND "
-        $items = $items.Restrict($jetFilter)
-    }
-    $items.Sort("[ReceivedTime]", $true)
-
-    $count = 0
-    $scanned = 0
-    $maxScan = 1000
-
-    foreach ($email in $items) {
-        $scanned++
-        if ($scanned -gt $maxScan) { break }
-
-        $senderName = [string]$email.SenderName
-        $senderAddr = [string]$email.SenderEmailAddress
-        if ($senderAddr -match "/O=") { $senderAddr = $senderName }
-
-        # Client-side text filters
-        if ($Subject -and $email.Subject -notlike "*$Subject*") { continue }
-        if ($From -and $senderName -notlike "*$From*" -and $senderAddr -notlike "*$From*") { continue }
-        if ($To -and $email.To -notlike "*$To*") { continue }
-        if ($Body -and $email.Body -notlike "*$Body*") { continue }
-
-        # Client-side property filters
-        if ($Importance -and $email.Importance -ne $importanceMap[$Importance]) { continue }
-        if ($HasAttachment -and $email.Attachments.Count -eq 0) { continue }
-        if ($Flagged -and $email.FlagStatus -ne 2) { continue }
-        if ($Unread -and -not $email.UnRead) { continue }
-        if ($Category -and $email.Categories -notlike "*$Category*") { continue }
-
-        $count++
-
-        # Display inline (no two-pass accumulation)
-        $markers = ""
-        if ($email.UnRead) { $markers += "[*]" }
-        if ($email.Attachments.Count -gt 0) { $markers += "[A]" }
-        if ($email.FlagStatus -eq 2) { $markers += "[F]" }
-        if ($email.Importance -eq 2) { $markers += "[!]" }
-
-        Write-Host "$count. $markers $($email.Subject)" -ForegroundColor Yellow
-        Write-Host "      From: $senderName <$senderAddr>"
-        Write-Host "      Date: $($email.ReceivedTime)"
-        Write-Host "      EntryID: $($email.EntryID)" -ForegroundColor Gray
-        if ($email.Categories) {
-            Write-Host "      Categories: $($email.Categories)" -ForegroundColor Gray
-        }
+    $n = 0
+    foreach ($r in $sorted) {
+        $n++
+        Write-Host "--- #$n ---" -ForegroundColor Cyan
+        Write-Host "  EntryID: $($r.EntryID)"
+        Write-Host "  Folder: $($r.Folder)" -ForegroundColor DarkGray
+        if ($r.ConversationID) { Write-Host "  ConversationID: $($r.ConversationID)" -ForegroundColor DarkGray }
+        Write-Host "  Subject: $($r.Subject)" -ForegroundColor Yellow
+        Write-Host "  From: $($r.From)"
+        if ($r.ToLine) { Write-Host "  To: $($r.ToLine)" }
+        Write-Host "  Date: $(Format-MailDate $r.Date)"
+        Write-Host "  Status: $(if ($r.Unread) { 'UNREAD' } else { 'read' })"
+        if ($r.Importance -and $r.Importance -ne "Normal") { Write-Host "  Importance: $($r.Importance)" -ForegroundColor Magenta }
+        if ($r.Flag) { Write-Host "  Flag: $($r.Flag)" -ForegroundColor Red }
+        if ($r.Categories) { Write-Host "  Categories: $($r.Categories)" -ForegroundColor Green }
+        if ($r.HasAttachments) { Write-Host "  Attachments: yes" }
+        if ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
         Write-Host ""
-
-        if ($count -ge $Limit) { break }
     }
-
-    if ($count -eq 0) {
-        Write-Host "No matching emails found." -ForegroundColor Gray
-        Write-Host "Tip: Try broadening your filters or increasing -Limit." -ForegroundColor Gray
-    } else {
-        Write-Host "--- Found: $count email(s) ---" -ForegroundColor Cyan
-        Write-Host "Tip: Use outlook-read-body.ps1 -EntryID <id> (preferred) or -Index <number> to read full email content." -ForegroundColor Gray
-    }
+    if ($n -eq 0) { Write-Host "No matching emails found." -ForegroundColor Gray }
+    else { Write-Host "=== Showing $n of $total matching ===" -ForegroundColor Cyan }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

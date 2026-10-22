@@ -1,174 +1,106 @@
-param(
+﻿param(
     [string]$EntryID = "",
     [int]$Index = 0,
-
     [string]$To = "",
     [string]$CC = "",
     [string]$BCC = "",
+    [string]$AddTo = "",
+    [string]$AddCC = "",
+    [string]$AddBCC = "",
     [string]$Subject = "",
     [string]$Body = "",
     [switch]$AppendBody,
-    [string[]]$AddAttachment = @(),
     [switch]$HTML,
-    [int]$Limit = 20
+    [string]$HtmlFile = "",
+    [switch]$Native,
+    [string[]]$AddAttachment = @(),
+    [string[]]$RemoveAttachment = @(),
+    [string]$Account = "",
+    [ValidateSet("", "Low", "Normal", "High")]
+    [string]$Importance = "",
+    [ValidateSet("", "Normal", "Personal", "Private", "Confidential")]
+    [string]$Sensitivity = "",
+    [int]$Limit = 20,
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Draft Update Script
-# Usage: .\outlook-draft-update.ps1 -EntryID "00000000..." -Subject "Updated Subject" (preferred)
-# Usage: .\outlook-draft-update.ps1 -Index 1 -Subject "Updated Subject" (fallback)
+# Outlook Draft Update: change an existing draft (new, reply or forward).
+#   Replace recipients (-To/-CC/-BCC) or add (-AddTo/-AddCC/-AddBCC); -Subject; -Account;
+#   -Importance; -Sensitivity; -AddAttachment.
+#   Body: -Body replaces the text you wrote (in a reply/forward only your block above the
+#   quoted thread is replaced; the thread is kept). -AppendBody adds to the end instead.
+#   Replacing text or removing attachments (-RemoveAttachment name or number) are edits:
+#   they preview unless -Confirm. Appending and adding never need confirmation.
+# -Index counts Drafts by last change, newest first (volatile; prefer -EntryID).
+# Usage: .\outlook-draft-update.ps1 -EntryID "00000000..." -Subject "New subject" -AddAttachment .\a.pdf
+# Usage: .\outlook-draft-update.ps1 -EntryID "00000000..." -Body "Rewritten text" -Confirm
 
-$Outlook = $null
-$targetDraft = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+
 try {
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
+    $null = Connect-Outlook
+    $mail = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -Index $Index -Days 3650 -Folder "Drafts" -DateProperty "LastModificationTime"
+    if ($mail.Sent) { Stop-WithError "This item was already sent; only drafts can be updated." }
+
+    $isEdit = ($Body -or $HtmlFile) -and -not $AppendBody
+    if ($RemoveAttachment.Count -gt 0) { $isEdit = $true }
+    if ($isEdit -and -not ($Confirm -or -not (Test-ConfirmRequired -Action "edit-draft"))) {
+        Write-ComposeSummary -Mail $mail -Title "PREVIEW (draft not changed)" -Json:$Json -Action "edit-draft"
+        if (-not $Json) { Approve-Action -Action "edit-draft" -Confirmed $false -What "this edit (replacing text or removing attachments)" | Out-Null }
+        exit 0
     }
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-
-    if ($EntryID) {
-        # EntryID = primary (direct lookup)
-        $targetDraft = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetDraft) {
-            Write-Host "ERROR: Draft not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-find.ps1 -Folder Drafts to get valid EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        # Index = fallback (scan)
-        $Drafts = $Namespace.GetDefaultFolder(16)  # olFolderDrafts = 16
-        $items = $Drafts.Items
-        $items.Sort("[LastModificationTime]", $true)
-
-        $count = 0
-        foreach ($draft in $items) {
-            $count++
-            if ($count -eq $Index) { $targetDraft = $draft }
-            if ($count -ge $Limit) { break }
-        }
-
-        if (-not $targetDraft) {
-            Write-Host "`nDraft at index $Index not found." -ForegroundColor Red
-            Write-Host "There are $count drafts available (showing up to $Limit)." -ForegroundColor Gray
-            Write-Host "Tip: Use -Limit parameter to see more drafts." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target a draft." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-draft-update.ps1 -EntryID ""00000000..."" -Subject ""New Subject""" -ForegroundColor Gray
-        Write-Host "       .\outlook-draft-update.ps1 -Index 1 -Subject ""New Subject""" -ForegroundColor Gray
+    $changes = @()
+    $fields = @{}
+    foreach ($k in "To", "CC", "BCC", "Subject", "Account", "Importance", "Sensitivity") {
+        if ($PSBoundParameters.ContainsKey($k) -and $PSBoundParameters[$k]) { $fields[$k] = $PSBoundParameters[$k]; $changes += $k }
+    }
+    if ($AddAttachment.Count) { $fields.Attachment = $AddAttachment; $changes += "attachments added" }
+    Set-MailFields -Mail $mail @fields
+    foreach ($pair in @(@($AddTo, 1), @($AddCC, 2), @($AddBCC, 3))) {
+        foreach ($addr in ($pair[0] -split ';')) { if ($addr.Trim()) { $r = $mail.Recipients.Add($addr.Trim()); $r.Type = $pair[1]; $changes += "recipient added" } }
     }
 
-    if ($targetDraft) {
-        # Track changes
-        $changes = @()
-
-        # Update fields if provided
-        if ($To) {
-            $oldTo = $targetDraft.To
-            $targetDraft.To = $To
-            if ($oldTo) {
-                $changes += "To: '$oldTo' -> '$To'"
-            } else {
-                $changes += "To: Set to '$To'"
-            }
+    foreach ($ra in $RemoveAttachment) {
+        $removed = $false
+        for ($i = $mail.Attachments.Count; $i -ge 1; $i--) {
+            $a = $mail.Attachments.Item($i)
+            if ("$i" -eq "$ra" -or $a.FileName -ieq $ra) { $a.Delete(); $removed = $true; $changes += "removed attachment $($a.FileName)"; break }
         }
+        if (-not $removed) { throw "No attachment '$ra' on this draft." }
+    }
 
-        if ($CC) {
-            $oldCC = $targetDraft.CC
-            $targetDraft.CC = $CC
-            if ($oldCC) {
-                $changes += "CC: '$oldCC' -> '$CC'"
-            } else {
-                $changes += "CC: Set to '$CC'"
-            }
-        }
-
-        if ($BCC) {
-            $oldBCC = $targetDraft.BCC
-            $targetDraft.BCC = $BCC
-            if ($oldBCC) {
-                $changes += "BCC: '$oldBCC' -> '$BCC'"
-            } else {
-                $changes += "BCC: Set to '$BCC'"
-            }
-        }
-
-        if ($Subject) {
-            $oldSubject = $targetDraft.Subject
-            $targetDraft.Subject = $Subject
-            $changes += "Subject: '$oldSubject' -> '$Subject'"
-        }
-
-        if ($Body) {
+    if ($Body -or $HtmlFile) {
+        $isHtml = [int]$mail.BodyFormat -eq 2
+        if ($isHtml) {
+            $content = Get-ComposeBody -Body $Body -HTML:$HTML -HtmlFile $HtmlFile -Native:(-not $HTML -and -not $HtmlFile)
+            $h = $mail.HTMLBody
+            $hasBlock = $h.Contains("<!--suite-reply-start-->")
             if ($AppendBody) {
-                if ($HTML) {
-                    $targetDraft.HTMLBody = $targetDraft.HTMLBody + "<br><br>" + $Body
-                } else {
-                    $targetDraft.Body = $targetDraft.Body + "`n`n" + $Body
-                }
-                $changes += "Body: Appended text"
+                if ($hasBlock) { $h = $h.Replace("</div><!--suite-reply-end-->", "$($content.Html)</div><!--suite-reply-end-->") }
+                else { $m = [regex]::Match($h, '</body>'); $h = if ($m.Success) { $h.Insert($m.Index, $content.Html) } else { $h + $content.Html } }
+                $mail.HTMLBody = $h
+                $changes += "body appended"
+            } elseif ($hasBlock -or $mail.ConversationIndex.Length -gt 44) {
+                # Reply/forward draft: replace only our block above the thread (or insert it).
+                Set-ReplyBlock -Item $mail -Html $content.Html
+                $changes += "reply text replaced"
             } else {
-                if ($HTML) {
-                    $targetDraft.HTMLBody = $Body
-                } else {
-                    $targetDraft.Body = $Body
-                }
-                $changes += "Body: Replaced"
+                $mail.HTMLBody = $content.Html
+                $changes += "body replaced"
             }
-        }
-
-        # Attach files with validation
-        foreach ($file in $AddAttachment) {
-            if (-not $file) { continue }
-            if (Test-Path $file) {
-                $targetDraft.Attachments.Add((Resolve-Path $file).Path) | Out-Null
-                $fileName = [System.IO.Path]::GetFileName($file)
-                $changes += "Attachment: Added '$fileName'"
-            } else {
-                Write-Host "Warning: Attachment not found - $file" -ForegroundColor Yellow
-            }
-        }
-
-        if ($changes.Count -eq 0) {
-            Write-Host "`nNo changes specified. Use parameters like -To, -Subject, -Body, -AddAttachment, etc." -ForegroundColor Yellow
         } else {
-            $targetDraft.Save()
-
-            Write-Host "`n=== DRAFT UPDATED ===" -ForegroundColor Green
-
-            $subjectDisplay = if ($targetDraft.Subject) { $targetDraft.Subject } else { "(No Subject)" }
-            Write-Host "Subject: $subjectDisplay" -ForegroundColor Yellow
-
-            if ($targetDraft.To) { Write-Host "To: $($targetDraft.To)" }
-            if ($targetDraft.CC) { Write-Host "CC: $($targetDraft.CC)" }
-            if ($targetDraft.BCC) { Write-Host "BCC: $($targetDraft.BCC)" }
-
-            $attachCount = $targetDraft.Attachments.Count
-            if ($attachCount -gt 0) {
-                Write-Host "Attachments: $attachCount file(s)" -ForegroundColor Gray
-            }
-
-            Write-Host "`nChanges made:" -ForegroundColor Cyan
-            foreach ($change in $changes) {
-                Write-Host "  - $change" -ForegroundColor Gray
-            }
-
-            Write-Host "`nDraft saved. Use outlook-send.ps1 to send when ready." -ForegroundColor Cyan
+            $mail.Body = if ($AppendBody) { $mail.Body + "`r`n" + $Body } else { $Body }
+            $changes += $(if ($AppendBody) { "body appended" } else { "body replaced" })
         }
     }
+
+    Assert-OutlookRecipients $mail
+    $mail.Save()
+    Write-ComposeSummary -Mail $mail -Title "DRAFT UPDATED ($($changes -join ', '))" -Json:$Json -Action "draft-update" `
+        -Next "Send: outlook-send-draft.ps1 -EntryID <EntryID> -Confirm"
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($targetDraft) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($targetDraft) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

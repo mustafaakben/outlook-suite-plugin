@@ -1,135 +1,56 @@
 param(
     [string]$EntryID = "",
+    [string]$StoreID = "",
     [int]$Index = 0,
-
+    [int]$Days = 7,
+    [switch]$OpenRecallDialog,
     [switch]$DeleteUnread,
-    [switch]$ConfirmDeleteFromSent,
-    [int]$Days = 7
+    [Alias("ConfirmDeleteFromSent")]
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Recall Email Script
-# Attempt to recall a sent email (Exchange only)
-# Usage: .\outlook-recall.ps1 -EntryID "00000000..." (preferred)
-# Usage: .\outlook-recall.ps1 -Index 1 (fallback)
-# Delete from Sent Items only: .\outlook-recall.ps1 -EntryID "00000000..." -DeleteUnread -ConfirmDeleteFromSent
+# Outlook Recall: help recall a sent email (Exchange / Microsoft 365 only).
+# Outlook's object model has no recall method, so there are two routes:
+#   -OpenRecallDialog  opens the message and Outlook's own "Recall This Message" dialog on
+#                      this PC; the user chooses the options and clicks OK.
+#   -DeleteUnread      deletes your copy from Sent Items only (NOT a recipient recall);
+#                      irreversible, previews unless -Confirm.
+# With neither switch it shows the message and the manual steps.
+# -Index counts Sent Items (newest first).
+# Usage: .\outlook-recall.ps1 -EntryID "00000000..." -OpenRecallDialog
 
-# IMPORTANT NOTES:
-# - Recall only works with Microsoft Exchange/Office 365
-# - Both sender and recipient must be on the same Exchange server
-# - Recall fails if the recipient has already read the email
-# - Recall fails if the email was moved to a different folder
-# - Recall fails if the recipient is using a non-Exchange email client
-# - Even when "successful", recall notifications may reveal the original message
-
-$Outlook = $null
-$Namespace = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
+    $null = Connect-Outlook
+    $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days -Folder "Sent" -DateProperty "SentOn"
+
+    if ($DeleteUnread) {
+        if (-not (Confirm-ItemAction -Action "delete" -Title "DELETE FROM SENT ITEMS (not a recall)" -Item $email -Confirmed $Confirm -What "the delete from Sent Items")) { exit 0 }
+        $rec = ConvertTo-MailRecord $email
+        $email.Delete()
+        if ($Json) { Write-Json ([ordered]@{ Action = "recall"; Result = "deleted from Sent Items"; EntryID = $rec.EntryID; Subject = $rec.Subject }); exit 0 }
+        Write-Host "=== REMOVED FROM SENT ITEMS ===" -ForegroundColor Green
+        Write-Host "  Subject: $($rec.Subject)" -ForegroundColor Yellow
+        Write-Host "  No recall was sent to recipients." -ForegroundColor Gray
+        exit 0
     }
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetEmail = $null
-
-    if ($EntryID) {
-        $targetEmail = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetEmail) {
-            Write-Host "ERROR: Email not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-find.ps1 -Folder ""Sent Items"" to get valid EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        $SentItems = $Namespace.GetDefaultFolder(5)  # olFolderSentMail = 5
-
-        # Get sent emails with locale-safe date
-        $since = (Get-Date).AddDays(-$Days).ToString("g")
-        $filter = "[SentOn] >= '$since'"
-
-        $items = $SentItems.Items.Restrict($filter)
-        $items.Sort("[SentOn]", $true)
-
-        # Find the email at the specified index
-        $count = 0
-        foreach ($email in $items) {
-            $count++
-            if ($count -eq $Index) {
-                $targetEmail = $email
-                break
-            }
-        }
-
-        if (-not $targetEmail) {
-            Write-Host "`nSent email at index $Index not found in last $Days days." -ForegroundColor Red
-            Write-Host "Note: Index is based on Sent Items folder." -ForegroundColor Gray
-            Write-Host "Tip: Try increasing -Days if the email is older." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target an email." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-recall.ps1 -EntryID ""00000000...""" -ForegroundColor Gray
+    if ($OpenRecallDialog) {
+        $email.Display()
+        $insp = $email.GetInspector
+        $insp.CommandBars.ExecuteMso("RecallThisMessage")
+        Write-ActionResult -Title "RECALL DIALOG OPENED" -Item $email -Changes ([ordered]@{ Next = "Choose the recall options in the Outlook window on this PC and click OK." }) -Json:$Json -Action "recall"
+        exit 0
     }
 
-    if ($targetEmail) {
-        Write-Host "`n=== RECALL EMAIL ===" -ForegroundColor Cyan
-        Write-Host "Subject: $($targetEmail.Subject)" -ForegroundColor Yellow
-        Write-Host "To: $($targetEmail.To)"
-        Write-Host "Sent: $($targetEmail.SentOn.ToString('g'))" -ForegroundColor Gray
-
-        Write-Host "`n--- Warning ---" -ForegroundColor Yellow
-        Write-Host "Email recall has significant limitations:" -ForegroundColor Yellow
-        Write-Host "  - Only works within Exchange/Office 365" -ForegroundColor Gray
-        Write-Host "  - Fails if recipient already read the email" -ForegroundColor Gray
-        Write-Host "  - Fails if email moved from Inbox" -ForegroundColor Gray
-        Write-Host "  - May not work for external recipients" -ForegroundColor Gray
-
-        # Attempt recall
-        try {
-            if ($DeleteUnread) {
-                Write-Host "`nRequested action: delete this message from your Sent Items only." -ForegroundColor Yellow
-                Write-Host "This is not a recipient recall." -ForegroundColor Yellow
-
-                if (-not $ConfirmDeleteFromSent) {
-                    Write-Host "`n[!] Add -ConfirmDeleteFromSent to proceed with Sent Items deletion." -ForegroundColor Cyan
-                    Write-Host "No changes were made." -ForegroundColor Gray
-                } else {
-                    $targetEmail.Delete()
-                    Write-Host "`nAction complete: removed from your Sent Items." -ForegroundColor Green
-                    Write-Host "No recipient-side recall was sent." -ForegroundColor Gray
-                }
-            } else {
-                # Standard recall - COM doesn't have direct Recall method
-                Write-Host "`nAttempting to initiate recall..." -ForegroundColor Cyan
-                Write-Host "`nLimitation: Programmatic recall is not fully supported via COM." -ForegroundColor Yellow
-                Write-Host "To recall this email:" -ForegroundColor Cyan
-                Write-Host "  1. Open Outlook" -ForegroundColor Gray
-                Write-Host "  2. Go to Sent Items" -ForegroundColor Gray
-                Write-Host "  3. Open the email" -ForegroundColor Gray
-                Write-Host "  4. Click Message > Actions > Recall This Message" -ForegroundColor Gray
-                Write-Host "`n--- Recall Status ---" -ForegroundColor Cyan
-                Write-Host "No recall request was sent automatically by this script." -ForegroundColor Gray
-                Write-Host "Use the Outlook steps above to attempt recipient recall." -ForegroundColor Gray
-                Write-Host "Recipients may still see the original message." -ForegroundColor Yellow
-            }
-        }
-        catch {
-            Write-Host "`nOperation failed: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "If this was a recall attempt, recall may not be available for this message." -ForegroundColor Gray
-        }
-    }
+    Write-ActionResult -Title "RECALL (manual)" -Item $email -Changes ([ordered]@{
+        Steps = "Open the message in Sent Items > Message > Actions (or ...) > Recall This Message"
+        Shortcut = "Run again with -OpenRecallDialog to open that dialog for this message"
+        Limits = "Exchange/M365 recipients only; fails if already read or moved; recipients may see the recall notice"
+    }) -Json:$Json -Action "recall"
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Namespace) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }
