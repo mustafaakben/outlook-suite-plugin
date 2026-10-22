@@ -66,12 +66,56 @@ try {
     $mine = @($l.reminders | Where-Object { $_.Caption -like "*suite-test*" })
     Check "reminders List shows the test reminder" ($l.count -ge 1 -and $mine.Count -ge 1) "count=$($l.count) mine=$($mine.Count)"
     if ($mine.Count) {
+        # Outlook only dismisses reminders it already shows as due; it checks about once a minute.
+        $deadline = (Get-Date).AddSeconds(70)
+        while ((Get-Date) -lt $deadline) {
+            $v = @((JsonOf (Run "outlook-reminders.ps1" @("-Json"))).reminders | Where-Object { $_.Caption -like "*suite-test*" -and $_.Visible })
+            if ($v.Count) { break }
+            Start-Sleep -Seconds 10
+        }
+        $dbg = @((JsonOf (Run "outlook-reminders.ps1" @("-Json"))).reminders | Where-Object { $_.Caption -like "*suite-test*" })
+        Write-Host "      (test reminder before dismiss: found=$($dbg.Count) visible=$($dbg[0].Visible) next=$($dbg[0].NextReminder))" -ForegroundColor DarkGray
         $r = Run "outlook-reminders.ps1" @("-Action", "Dismiss", "-Caption", "suite-test")
-        Check "reminders Dismiss previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW")
+        Check "reminders Dismiss previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW") "exit=$($r.Exit) out=$(($r.Out -split "`n" | Select-Object -First 3) -join ' / ')"
         $r = Run "outlook-reminders.ps1" @("-Action", "Dismiss", "-Caption", "suite-test", "-Confirm", "-Json")
         $after = @((JsonOf (Run "outlook-reminders.ps1" @("-Json"))).reminders | Where-Object { $_.Caption -like "*suite-test*" -and $_.Visible })
         Check "reminders Dismiss -Confirm" ($r.Exit -eq 0 -and $after.Count -eq 0) "exit=$($r.Exit)"
     }
+
+    # Junk: move a test draft to Junk and back; block/safe sender only as preview
+    $r = Run "outlook-junk.ps1" @("-Action", "MarkJunk", "-EntryID", $did, "-Json")
+    $jk = JsonOf $r
+    Check "junk MarkJunk (test draft into Junk Email)" ($r.Exit -eq 0 -and $Namespace.GetItemFromID($jk.EntryID).Parent.Name -match "Junk")
+    $r = Run "outlook-junk.ps1" @("-Action", "NotJunk", "-EntryID", $jk.EntryID, "-Json")
+    $nj = JsonOf $r
+    Check "junk NotJunk (back to Inbox)" ($r.Exit -eq 0 -and $Namespace.GetItemFromID($nj.EntryID).Parent.Name -eq "Inbox")
+    $did = $nj.EntryID
+    $r = Run "outlook-junk.ps1" @("-Action", "BlockSender", "-EntryID", $recent[0].EntryID)
+    Check "junk BlockSender previews only" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW")
+    $r = Run "outlook-junk.ps1" @("-Action", "Lists")
+    Check "junk Lists without the Exchange module explains (exit 1)" ($r.Exit -eq 1 -and $r.Out -match "Exchange Online")
+
+    # Signatures: a throwaway signature only
+    $sn = "suite-test-sig"
+    $r = Run "outlook-signatures.ps1" @("-Action", "Create", "-Name", $sn, "-Text", "Test Signature`nhttps://example.com/sig")
+    Check "signatures Create" ($r.Exit -eq 0 -and (Test-Path (Join-Path $env:APPDATA "Microsoft\Signatures\$sn.htm")))
+    $r = Run "outlook-signatures.ps1" @("-Action", "List", "-Json")
+    Check "signatures List includes it" ($r.Exit -eq 0 -and @((JsonOf $r).Signatures | Where-Object Name -eq $sn).Count -eq 1)
+    $r = Run "outlook-signatures.ps1" @("-Action", "Show", "-Name", $sn)
+    Check "signatures Show (link as reference)" ($r.Exit -eq 0 -and $r.Out -match "Test Signature" -and $r.Out -match "URL-001")
+    $r = Run "outlook-signatures.ps1" @("-Action", "Create", "-Name", $sn, "-Text", "x")
+    Check "signatures Create existing without -Force fails" ($r.Exit -eq 1)
+    $r = Run "outlook-signatures.ps1" @("-Action", "Insert", "-Name", $sn, "-EntryID", $did)
+    Check "signatures Insert into draft" ($r.Exit -eq 0 -and $Namespace.GetItemFromID($did).HTMLBody -match "suite-signature")
+    $r = Run "outlook-signatures.ps1" @("-Action", "SetDefault", "-Name", $sn)
+    Check "signatures SetDefault previews only" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW")
+    $r = Run "outlook-signatures.ps1" @("-Action", "Delete", "-Name", $sn, "-Confirm")
+    Check "signatures Delete -Confirm" ($r.Exit -eq 0 -and -not (Test-Path (Join-Path $env:APPDATA "Microsoft\Signatures\$sn.htm")))
+
+    # Stores (read-only)
+    $r = Run "outlook-stores.ps1" @("-TopFolders", "5", "-Json")
+    $st = JsonOf $r
+    Check "stores with sizes and top folders" ($r.Exit -eq 0 -and @($st.stores | Where-Object Default).Count -eq 1 -and @($st.topFolders).Count -eq 5)
 
     # Saved search folder (created, then removed)
     $r = Run "outlook-search-advanced.ps1" @("-Folders", "Inbox", "-Subject", "zzq-suite-never", "-SaveAs", "suite-test-search", "-Json")
@@ -82,7 +126,8 @@ try {
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     $q = "@SQL=""urn:schemas:httpmail:textdescription"" LIKE '%$marker%' OR ""urn:schemas:httpmail:subject"" LIKE '[suite-test]%'"
-    foreach ($pass in 1, 2) { foreach ($f in @($Namespace.GetDefaultFolder(16), $Namespace.GetDefaultFolder(13), $Namespace.GetDefaultFolder(3), $sandbox)) { try { foreach ($i in @($f.Items.Restrict($q))) { try { $i.Delete() } catch { } } } catch { } } }
+    Get-ChildItem (Join-Path $env:APPDATA "Microsoft\Signatures") -Filter "suite-test-sig*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+    foreach ($pass in 1, 2) { foreach ($f in @($Namespace.GetDefaultFolder(16), $Namespace.GetDefaultFolder(13), $Namespace.GetDefaultFolder(6), $Namespace.GetDefaultFolder(23), $Namespace.GetDefaultFolder(3), $sandbox)) { try { foreach ($i in @($f.Items.Restrict($q))) { try { $i.Delete() } catch { } } } catch { } } }
     foreach ($f in $Namespace.DefaultStore.GetSearchFolders()) { if ($f.Name -like "suite-test*") { try { $f.Delete() } catch { } } }
 }
 Write-Host ""

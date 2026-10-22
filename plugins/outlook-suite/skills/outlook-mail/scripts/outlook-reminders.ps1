@@ -26,7 +26,8 @@ try {
     $rem = $Outlook.Reminders
     $horizon = (Get-Date).AddDays($Days)
     $listAll = ($Action -eq "List" -and $All)
-    $list = @(for ($i = 1; $i -le $rem.Count; $i++) {
+    function Get-ReminderList {
+      @(for ($i = 1; $i -le $rem.Count; $i++) {
         $r = $rem.Item($i)
         $visible = [bool]$r.IsVisible
         if (-not $listAll -and -not $visible) {
@@ -40,7 +41,9 @@ try {
         try { $o.Due = Format-MailDateIso $r.OriginalReminderDate } catch { }
         try { $it = $r.Item; $o.EntryID = $it.EntryID; $o.ItemType = @{ 43 = "email"; 26 = "meeting"; 48 = "task"; 40 = "contact" }[[int]$it.Class] } catch { }
         $o
-    })
+      })
+    }
+    $list = Get-ReminderList
 
     if ($Action -eq "List") {
         if ($Json) { Write-Json ([ordered]@{ count = $list.Count; reminders = $list }); exit 0 }
@@ -54,9 +57,18 @@ try {
         exit 0
     }
 
-    $targets = @(if ($All) { $list | Where-Object { $_.Visible } }
-        elseif ($Index) { $list | Where-Object { $_.Index -eq $Index } }
-        elseif ($Caption) { $list | Where-Object { $_.Caption -like "*$Caption*" } })
+    function Select-Targets($l) {
+        @(if ($All) { $l | Where-Object { $_.Visible } }
+            elseif ($Index) { $l | Where-Object { $_.Index -eq $Index } }
+            elseif ($Caption) { $l | Where-Object { $_.Caption -like "*$Caption*" } })
+    }
+    $targets = Select-Targets $list
+    if ($targets.Count -eq 0) {
+        # Outlook changes the Reminders collection while it fires reminders; look once more.
+        Start-Sleep -Seconds 2
+        $list = Get-ReminderList
+        $targets = Select-Targets $list
+    }
     if ($targets.Count -eq 0) { Stop-WithError "No matching reminder. Use -Index (see -Action List), -Caption, or -All (due ones)." }
 
     if ($Action -eq "Dismiss" -and -not ($Confirm -or -not (Test-ConfirmRequired -Action "reminders"))) {
