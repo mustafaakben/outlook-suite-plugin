@@ -5,7 +5,7 @@ description: "Complete Microsoft Outlook automation via PowerShell COM objects o
 
 # Outlook Suite
 
-Automates Microsoft Outlook operations across email, calendar, contacts, tasks, and notes using PowerShell COM objects. 62 scripts organized into 5 focused modules.
+Automates Microsoft Outlook operations across email, calendar, contacts, tasks, and notes using PowerShell COM objects. 78 scripts organized into 5 focused modules.
 
 ## Prerequisites
 
@@ -15,15 +15,14 @@ Automates Microsoft Outlook operations across email, calendar, contacts, tasks, 
 
 ## Safety Rules
 
-1. **Never auto-send** — all send operations require `-Confirm` parameter
-2. **Never delete without confirmation** — always confirm with the user before running delete scripts
-3. **Draft-first for compose** — create as draft, show the user, then send only after approval
-4. **Verify targets** — when acting on a specific item, confirm the subject/recipient with the user before modifying
-5. **Prefer EntryID** — always use EntryID over Index when targeting items (Index numbers shift as new items arrive)
+1. **Confirmation gates** — send, delete and every other irreversible mail action only previews unless `-Confirm` is passed (the user can switch this off; see "Confirmation" in [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)). Ask the user before passing `-Confirm` unless they already said to go ahead.
+2. **Draft-first for compose** — create as draft, show the user, then send only after approval
+3. **Verify targets** — when acting on a specific item, confirm the subject/recipient with the user before modifying
+4. **Prefer EntryID** — always use EntryID over Index when targeting items (Index numbers shift as new items arrive)
 
 ## Item Targeting Pattern
 
-All modules use **EntryID** as the primary method to target specific items. EntryID is a permanent, unique identifier that never changes.
+All modules use **EntryID** as the primary method to target specific items. An EntryID identifies one item, but it can change when the item moves to another folder or mailbox; scripts that move or copy print the new one.
 
 **Workflow:**
 1. Run a listing or search script to discover items (many return EntryID directly; for mail, prefer `outlook-find.ps1` for stable EntryIDs)
@@ -45,16 +44,15 @@ This suite is organized into 5 self-contained modules. Each module has its own d
 
 ### Email — [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)
 
-The largest module (35 scripts). Handles all email operations:
+The largest module (51 scripts). Handles all email operations:
 
-- **Find and target** — `outlook-find.ps1` for EntryID discovery with rich filtering
-- **Read and search** — read inbox, read full body, search, advanced search
-- **Compose and send** — draft, update draft, send, send-as, reply, forward, voting buttons
-- **Organize** — move, delete, mark read/unread, conversation view, print
-- **Flags and metadata** — flag, unflag, importance, sensitivity, save-as
-- **Categories** — list, create, assign, remove, delete categories
-- **Scheduling** — schedule send, request receipts, recall messages
-- **Account management** — folders, accounts, rules, out-of-office, attachment save
+- **Find and target** — `outlook-find.ps1` for EntryID discovery with rich filtering; multi-folder and whole-mailbox search; the user's current selection
+- **Read** — full body with numbered link citations (`[URL-001]`), full threads, links, internet headers, attachments
+- **Compose and send** — draft, update draft, send a reviewed draft, send, send-as, HTML reply/forward inside the thread, voting buttons, receipts, schedule send
+- **Organize** — move, copy, delete, bulk actions over many emails, mark read/unread, flags, importance, sensitivity, categories, conversation-wide actions
+- **Folders and rules** — list/create/rename/move/delete/empty folders; list/create/enable/disable/reorder/run/delete rules
+- **Account** — accounts, stores and sizes, out-of-office, junk and safe senders, signatures, reminders, save-as, print, import `.msg`
+- **Speed** — `outlook-call.ps1` runs any mail script through a warm host (about twice as fast for repeated calls)
 
 ### Calendar — [outlook-calendar/SKILL.md](../outlook-calendar/SKILL.md)
 
@@ -94,57 +92,7 @@ The largest module (35 scripts). Handles all email operations:
 
 ### Email — [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)
 
-**Find and Target**
-- `outlook-find.ps1` — Find emails by criteria, return stable EntryIDs for action scripts
-
-**Read and Search**
-- `outlook-read.ps1` — List recent inbox emails with sender, date, unread status, and EntryID
-- `outlook-read-body.ps1` — Read full email body by EntryID or index
-- `outlook-search.ps1` — Search emails by subject, sender, or body text
-- `outlook-search-advanced.ps1` — Multi-filter advanced search (attachments, importance, flags, dates, folders)
-
-**Compose and Send**
-- `outlook-draft.ps1` — Create draft email (plain text or HTML, with attachments)
-- `outlook-draft-update.ps1` — Modify existing draft (recipients, subject, body, attachments)
-- `outlook-send.ps1` — Send email directly (requires -Confirm)
-- `outlook-send-as.ps1` — Send from a specific account (requires -Confirm)
-- `outlook-reply.ps1` — Reply or Reply All to email (requires -Confirm to send)
-- `outlook-forward.ps1` — Forward email to recipients (requires -Confirm to send)
-- `outlook-voting.ps1` — Send email with voting buttons/poll (requires -Confirm)
-
-**Organize**
-- `outlook-move.ps1` — Move email to a folder by name or path
-- `outlook-delete.ps1` — Delete email, soft or permanent (requires -Confirm)
-- `outlook-mark-read.ps1` — Mark email as read or unread
-- `outlook-conversation.ps1` — View full email conversation thread
-- `outlook-print.ps1` — Print email to default printer
-
-**Flags, Importance and Sensitivity**
-- `outlook-flag.ps1` — Flag email for follow-up with optional due date and reminder
-- `outlook-unflag.ps1` — Remove flag or mark flag as complete
-- `outlook-set-importance.ps1` — Set email priority (Low, Normal, High)
-- `outlook-set-sensitivity.ps1` — Set email sensitivity (Normal, Personal, Private, Confidential)
-- `outlook-save-as.ps1` — Export email to file (msg, txt, html, mht)
-
-**Categories**
-- `outlook-list-categories.ps1` — List all categories with colors
-- `outlook-create-category.ps1` — Create new category with color
-- `outlook-assign-category.ps1` — Assign category to email (appends, does not replace)
-- `outlook-remove-category.ps1` — Remove specific or all categories from email
-- `outlook-delete-category.ps1` — Delete category from master list
-
-**Scheduling and Receipts**
-- `outlook-schedule-send.ps1` — Schedule email to send at a future date/time
-- `outlook-request-receipt.ps1` — Send with read and/or delivery receipt requests
-- `outlook-recall.ps1` — Attempt to recall a sent email (Exchange only)
-
-**Account and Rule Management**
-- `outlook-folders.ps1` — List all mail folders with item and unread counts
-- `outlook-accounts-list.ps1` — List all configured email accounts
-- `outlook-rules-list.ps1` — List email rules with ON/OFF status
-- `outlook-rules-create.ps1` — Create new email rule with conditions and actions
-- `outlook-out-of-office.ps1` — Configure Out of Office auto-replies (Exchange)
-- `outlook-attachment-save.ps1` — Save email attachments to disk (skips inline images by default)
+All 51 mail scripts, with their key parameters, are in the **"Which script when"** table in [outlook-mail/SKILL.md](../outlook-mail/SKILL.md). Start with `outlook-find.ps1` (EntryIDs), `outlook-read-body.ps1` / `outlook-conversation.ps1` (read), `outlook-reply.ps1` / `outlook-draft.ps1` (compose as draft), `outlook-send-draft.ps1 -Confirm` (send after approval).
 
 ### Calendar — [outlook-calendar/SKILL.md](../outlook-calendar/SKILL.md)
 
