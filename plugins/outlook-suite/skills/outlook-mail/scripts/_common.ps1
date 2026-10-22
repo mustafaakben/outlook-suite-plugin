@@ -441,7 +441,9 @@ function ConvertTo-JsonRecord {
     param($Record)
     $o = [ordered]@{}
     foreach ($k in $Record.Keys) {
-        $o[$k] = if ($k -eq "Date") { Format-MailDateIso $Record[$k] } else { $Record[$k] }
+        # Plain assignment: an if-expression would unroll empty arrays to {} under Windows PowerShell 5.1
+        $o[$k] = $Record[$k]
+        if ($k -eq "Date") { $o[$k] = Format-MailDateIso $Record[$k] }
     }
     return $o
 }
@@ -638,6 +640,7 @@ function Write-MailList {
         if ($r.Importance -and $r.Importance -ne "Normal") { Write-Host "  Importance: $($r.Importance)" -ForegroundColor Magenta }
         if ($r.Flag) { Write-Host "  Flag: $($r.Flag)" -ForegroundColor Red }
         if ($r.Categories) { Write-Host "  Categories: $($r.Categories)" -ForegroundColor Green }
+        if ($r.Contains("CopilotPriority") -and $r.CopilotPriority) { Write-Host "  Copilot priority: $($r.CopilotPriority)" -ForegroundColor Magenta }
         if ($r.Contains("Attachments") -and $r.Attachments) { Write-Host "  Attachments ($($r.Attachments.Count)): $($r.Attachments -join ', ')" }
         elseif ($r.HasAttachments) { Write-Host "  Attachments: yes (names: outlook-attachment-save.ps1 -EntryID <id> -ListOnly)" }
         if ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
