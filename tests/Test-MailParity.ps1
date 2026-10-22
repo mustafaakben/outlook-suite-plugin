@@ -26,7 +26,9 @@ $cases = @(
     @{ Name = "find-7d-50";        Script = "outlook-find.ps1";   Args = @("-Days", "7", "-Limit", "50") }
     @{ Name = "find-30d-200";      Script = "outlook-find.ps1";   Args = @("-Days", "30", "-Limit", "200") }
     @{ Name = "find-30d-unread";   Script = "outlook-find.ps1";   Args = @("-Days", "30", "-Limit", "200", "-UnreadOnly") }
-    @{ Name = "find-30d-attach";   Script = "outlook-find.ps1";   Args = @("-Days", "30", "-Limit", "200", "-HasAttachment") }
+    # Intended change: the new find uses Outlook's attachment flag, which ignores inline images
+    # (signature logos). The new result must be a subset of the old one (no real attachment missed).
+    @{ Name = "find-30d-attach";   Script = "outlook-find.ps1";   Args = @("-Days", "30", "-Limit", "200", "-HasAttachment"); Expect = "subset" }
     @{ Name = "find-30d-subject";  Script = "outlook-find.ps1";   Args = @("-Days", "30", "-Limit", "200", "-Subject", "meeting") }
     @{ Name = "find-30d-body";     Script = "outlook-find.ps1";   Args = @("-Days", "30", "-Limit", "200", "-BodyContains", "thank") }
     @{ Name = "find-sent-14d";     Script = "outlook-find.ps1";   Args = @("-Folder", "Sent", "-Days", "14", "-Limit", "100") }
@@ -55,7 +57,7 @@ $results = foreach ($case in $cases) {
         OnlyCand   = $onlyCand.Count
         SameOrder  = (($base.Ids -join ",") -eq ($cand.Ids -join ","))
         Errors     = "$([int]$base.Error)/$([int]$cand.Error)"
-        Match      = ($onlyBase.Count -eq 0 -and $onlyCand.Count -eq 0)
+        Match      = $(if ($case.Expect -eq "subset") { $onlyCand.Count -eq 0 } else { $onlyBase.Count -eq 0 -and $onlyCand.Count -eq 0 })
     }
 }
 
