@@ -40,7 +40,7 @@ try {
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     if (Test-Path -LiteralPath $Path) {
         if ($Overwrite) {
-            if (-not (Confirm-ItemAction -Action "overwrite" -Title "OVERWRITE FILE" -Item $email -Confirmed $Confirm -Details ([ordered]@{ File = $Path }) -What "the overwrite")) { exit 0 }
+            if ((Confirm-ItemAction -Action "overwrite" -Title "OVERWRITE FILE" -Item $email -Confirmed $Confirm -Details ([ordered]@{ File = $Path }) -What "the overwrite") -ne $true) { exit 0 }
         } else {
             $base = [System.IO.Path]::GetFileNameWithoutExtension($Path); $e = [System.IO.Path]::GetExtension($Path); $c = 1
             do { $candidate = Join-Path $dir "${base}_$c$e"; $c++ } while (Test-Path -LiteralPath $candidate)

@@ -7,11 +7,13 @@ This repository is now a plugin marketplace repo that publishes one plugin: `out
 ## Purpose
 
 The `outlook-suite` plugin provides modular Outlook automation skills built on PowerShell + Outlook COM:
-- Read/search/manage email and drafts
-- Create/update/delete calendar events and respond to meetings
-- Create/search/update contacts and export vCards
-- Create/update/complete/assign tasks
-- Create/read/delete Outlook sticky notes
+- Mail: read, search, triage and manage email and drafts, Copilot priority and suggested replies, rules, categories and folders
+- Calendar: find free time ranked by how full each day is, propose times as email-ready text, week overview, meeting prep, holds and invites, respond and cancel
+- People and contacts: find anyone across your contacts, your organization's directory and recent mail, profiles, org chart, list members, duplicate merge, vCard/CSV import
+- Tasks: a daily or weekly agenda, overdue triage, tasks from email, recurring tasks and due views
+- Notes: create, read, search and delete Outlook sticky notes
+
+Every irreversible or outward-facing action previews by default and acts only with `-Confirm`.
 
 ## Repository Structure
 
@@ -67,9 +69,9 @@ The suite follows strict operational safety patterns:
 - Favor draft-first workflows for outgoing email
 - Align docs with actual script behavior and safety gates
 
-## Confirmation (mail)
+## Confirmation
 
-Every irreversible or outward-facing mail action is available to agents: send, send-as, send a draft, schedule send, reply/forward send, delete (and permanent delete), recall, rules, folder rename/move/delete/empty, bulk actions, category deletion, out-of-office, junk lists, signatures, reminder dismiss, conversation always-rules, print. Each one checks a confirmation flag. Without confirmation the script prints `PREVIEW ONLY: ... was NOT done.`, describes exactly what it would do, and exits 0. Reversible actions (drafts, move, copy, flags, categories, mark read) act immediately.
+Every irreversible or outward-facing mail action is available to agents: send, send-as, send a draft, schedule send, reply/forward send, delete (and permanent delete), recall, rules, folder rename/move/delete/empty, bulk actions, category deletion, out-of-office, junk lists, signatures, reminder dismiss, conversation always-rules, print. Since 3.0 the other modules use the same gate: calendar create and recurring with attendees, hold-to-invite, update with -SendUpdate, cancel, respond, forward -Send and delete; contact delete, dedupe merge and import; task delete, assign and bulk triage; note delete. Each one checks a confirmation flag. Without confirmation the script prints `PREVIEW ONLY: ... was NOT done.`, describes exactly what it would do, and exits 0. Reversible actions (drafts, move, copy, flags, categories, mark read) act immediately.
 
 The flag is the user's choice and can be changed at three levels (first match wins):
 
@@ -77,9 +79,9 @@ The flag is the user's choice and can be changed at three levels (first match wi
 2. Per shell: `$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "0"` turns confirmation off, `"1"` forces it on.
 3. Per user: `%APPDATA%\outlook-suite\config.json`, for example `{ "requireConfirm": true, "actions": { "send": true, "bulk": false } }`. The action names are listed in `plugins/outlook-suite/skills/outlook-mail/SKILL.md`.
 
-With nothing configured, confirmation is required. Agents are told to ask the user before passing `-Confirm`.
+With nothing configured, confirmation is required. Agents are told to ask the user before passing `-Confirm`. With `-Json`, a preview is a JSON object with `Result` "preview".
 
-All mail scripts exit 1 with an `Error: ...` line on failure, and accept `-Json` for machine-readable output.
+All scripts in every module exit 1 with an `Error: ...` line on failure, and accept `-Json` for machine-readable output.
 
 ## Local Script Usage (Optional)
 
@@ -106,6 +108,45 @@ cd plugins/outlook-suite/skills/outlook-mail
 
 # Same scripts through the warm host (faster for repeated calls)
 & ".\scripts\outlook-call.ps1" find -Days 2 -UnreadOnly
+```
+
+## What's new in 3.0: examples
+
+Calendar, people and contacts, tasks and notes now work like the mail scripts: fast, `-Json` everywhere, previews before anything irreversible, and all of them run through the warm host. The names below are placeholders.
+
+```powershell
+$call = "plugins/outlook-suite/skills/outlook-mail/scripts/outlook-call.ps1"
+
+# Today's brief: meetings vs holds vs firm events, tasks and flagged email due, priority unread mail
+pwsh -File $call agenda
+
+# Three meeting times with Jane, best days first, as email-ready lines
+pwsh -File $call calendar-free -Attendees "jane.doe@example.org" -Duration 30 -Propose
+
+# The week at a glance: meetings, holds, firm events, conflicts and each day's tier
+pwsh -File $call calendar-week
+
+# Prep for the next meeting: agenda and join link, who is coming (title, department,
+# mail exchanged with each) and related mail by subject; read-only
+pwsh -File $call calendar-prep -Next
+
+# Cancel a meeting you organize and notify everyone: previews who would be told and
+# changes nothing until you add -Confirm
+pwsh -File $call calendar-cancel -EntryID "00000000..." -Message "I need to move this, new time soon."
+
+# Find someone and their contact points, then a "who is this" profile
+pwsh -File $call people "jane doe"
+pwsh -File $call people "jane doe" -Profile
+
+# Overdue tasks by age and category; preview a bulk clean-up (add -Confirm to apply it)
+pwsh -File $call tasks-triage
+pwsh -File $call tasks-triage -Older 30 -ClearDue
+
+# Turn an email into a task due tomorrow (the email itself is not changed)
+pwsh -File $call tasks-from-mail -EntryID "00000000..." -When Tomorrow
+
+# Search the full text of your sticky notes
+pwsh -File $call notes-list -Search "budget" -Json
 ```
 
 ## Module Documentation

@@ -6,126 +6,48 @@ param(
     [string]$AssignTo,
 
     [switch]$KeepCopy,
-    [switch]$IncludeCompleted
+    [switch]$IncludeCompleted,
+    [switch]$Confirm,
+    [switch]$Json
 )
 
-# Outlook Task Assign Script
-# Delegate/assign a task to another person
-# Usage: .\outlook-tasks-assign.ps1 -EntryID "00000000..." -AssignTo "colleague@example.com" (preferred)
-# Usage: .\outlook-tasks-assign.ps1 -Index 1 -AssignTo "colleague@example.com" (fallback)
-# Keep copy: .\outlook-tasks-assign.ps1 -EntryID "00000000..." -AssignTo "colleague@example.com" -KeepCopy
+# Outlook Task Assign: send a task request to another person (needs Exchange / Microsoft 365).
+# Outward-facing: this SENDS an email. Previews unless -Confirm (or confirmation for "send"
+# is turned off; see the outlook-mail SKILL.md "Confirmation").
+# Usage: .\outlook-tasks-assign.ps1 -EntryID "00000000..." -AssignTo "colleague@example.com" -Confirm
+# Keep copy: .\outlook-tasks-assign.ps1 -EntryID "00000000..." -AssignTo "colleague@example.com" -KeepCopy -Confirm
 
-$Outlook = $null
-$Namespace = $null
-$Tasks = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_tasks.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
+    $null = Connect-Outlook
+    $task = Resolve-TaskItem -Namespace $Namespace -EntryID $EntryID -Index $Index -IncludeCompleted:$IncludeCompleted
 
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $targetTask = $null
+    # Resolve the person before anything else, so a typo fails without touching the task.
+    $who = $Namespace.CreateRecipient($AssignTo)
+    if (-not $who.Resolve()) { Stop-WithError "Could not resolve '$AssignTo'." -Hint "Use a full email address, or find the person with the contacts skill." }
+    $whoName = $who.Name
+    $whoSmtp = ""
+    try { $ex = $who.AddressEntry.GetExchangeUser(); if ($ex) { $whoSmtp = $ex.PrimarySmtpAddress } } catch { }
+    if (-not $whoSmtp) { try { $whoSmtp = $who.AddressEntry.Address } catch { } }
+    $whoLabel = if ($whoSmtp -and $whoSmtp -ne $whoName) { "$whoName <$whoSmtp>" } else { $whoName }
 
-    if ($EntryID) {
-        $targetTask = $Namespace.GetItemFromID($EntryID)
-        if (-not $targetTask) {
-            Write-Host "ERROR: Task not found with provided EntryID." -ForegroundColor Red
-            Write-Host "Tip: Use outlook-tasks-list.ps1 to find tasks and get EntryIDs." -ForegroundColor Gray
-        }
-    } elseif ($Index -gt 0) {
-        $Tasks = $Namespace.GetDefaultFolder(13)  # olFolderTasks = 13
-        $items = $Tasks.Items
-        $items.Sort("[DueDate]")
+    $details = [ordered]@{ "Assign to" = $whoLabel; "Keep copy" = [bool]$KeepCopy }
+    if ($task.Delegator) { $details["Already assigned by"] = $task.Delegator }
+    if ((Confirm-TaskAction -Action "send" -Title "ASSIGN TASK (sends a task request email)" -Task $task -Confirmed $Confirm -Details $details -What "the task request" -Json:$Json) -ne $true) { if ($script:TaskPreviewJson) { Write-Json $script:TaskPreviewJson }; exit 0 }
 
-        # Build filtered list
-        $filteredTasks = @()
-        foreach ($task in $items) {
-            if (-not $IncludeCompleted -and $task.Status -eq 2) {
-                continue
-            }
-            $filteredTasks += $task
-        }
+    $rec = ConvertTo-TaskRecord $task
+    $request = $task.Assign()
+    [void]$request.Recipients.Add($(if ($whoSmtp) { $whoSmtp } else { $AssignTo }))   # the person resolved above
+    if (-not $request.Recipients.ResolveAll()) { Stop-WithError "Could not resolve '$AssignTo' on the task request; nothing was sent." }
+    if ($KeepCopy) { $request.KeepAfterAssignment = $true }
+    $request.Send()
 
-        # Find the task at the specified index
-        if ($Index -lt 1 -or $Index -gt $filteredTasks.Count) {
-            Write-Host "`nTask at index $Index not found." -ForegroundColor Red
-            Write-Host "Use outlook-tasks-list.ps1 to see available tasks." -ForegroundColor Gray
-        } else {
-            $targetTask = $filteredTasks[$Index - 1]
-        }
-    } else {
-        Write-Host "ERROR: Provide -EntryID or -Index to target a task." -ForegroundColor Red
-        Write-Host "Usage: .\outlook-tasks-assign.ps1 -EntryID ""00000000..."" -AssignTo ""colleague@example.com""" -ForegroundColor Gray
-    }
-
-    if ($targetTask) {
-        $taskSubject = $targetTask.Subject
-
-        # Check if task is already assigned
-        if ($targetTask.Delegator) {
-            Write-Host "`nWarning: This task was already assigned by: $($targetTask.Delegator)" -ForegroundColor Yellow
-        }
-
-        # Assign the task
-        $taskRequest = $targetTask.Assign()
-
-        # Add the recipient
-        $recipient = $taskRequest.Recipients.Add($AssignTo)
-        $recipient.Resolve()
-
-        if (-not $recipient.Resolved) {
-            Write-Host "`nCould not resolve recipient: $AssignTo" -ForegroundColor Red
-            Write-Host "Please verify the email address." -ForegroundColor Gray
-        } else {
-            # Set whether to keep a copy
-            if ($KeepCopy) {
-                $taskRequest.KeepAfterAssignment = $true
-            }
-
-            # Send the task request
-            $taskRequest.Send()
-
-            Write-Host "`n=== TASK ASSIGNED ===" -ForegroundColor Green
-            Write-Host "Task: $taskSubject" -ForegroundColor Yellow
-            Write-Host "Assigned to: $AssignTo" -ForegroundColor Cyan
-
-            if ($targetTask.DueDate -and $targetTask.DueDate -ne "1/1/4501") {
-                Write-Host "Due: $($targetTask.DueDate.ToString('ddd, MMM d, yyyy'))" -ForegroundColor Gray
-            }
-
-            if ($KeepCopy) {
-                Write-Host "`nA copy will be kept in your task list." -ForegroundColor Gray
-            } else {
-                Write-Host "`nTask will be removed from your list once accepted." -ForegroundColor Gray
-            }
-
-            Write-Host "`nTask request sent. The recipient will receive an email to accept/decline." -ForegroundColor Cyan
-        }
-    }
+    $changes = [ordered]@{ "Assigned to" = $whoLabel; "Keep copy" = [bool]$KeepCopy }
+    Write-TaskResult -Title "TASK ASSIGNED (request sent)" -Record $rec -Changes $changes -Json:$Json -Action "assign"
 }
 catch {
-    if ($_.Exception.Message -like "*Operation aborted*") {
-        Write-Host "`nTask assignment was cancelled." -ForegroundColor Yellow
-    } else {
-        Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "`nNote: Task assignment requires Exchange or Microsoft 365." -ForegroundColor Gray
-    }
-}
-finally {
-    if ($Tasks) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Tasks) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    if ($_.Exception.Message -like "*Operation aborted*") { Stop-WithError "Task assignment was cancelled." }
+    Stop-WithError $_ -Hint "Task assignment requires Exchange or Microsoft 365."
 }

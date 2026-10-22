@@ -1,4 +1,4 @@
-# Run an Outlook mail script through the warm host (fast path).
+# Run an Outlook suite script (mail, calendar, contacts, tasks, notes) through the warm host (fast path).
 #
 # Usage:
 #   outlook-call.ps1 <script> [script arguments...]
@@ -50,7 +50,13 @@ function Resolve-ScriptPath([string]$name) {
     if ($n -notlike "outlook-*") { $n = "outlook-$n" }
     $p = Join-Path $here $n
     if (Test-Path -LiteralPath $p) { return $p }
-    throw "Unknown script '$name'. Scripts live in $here."
+    # Calendar, contacts, tasks and notes scripts live in the sibling skills.
+    $skills = Split-Path (Split-Path $here -Parent) -Parent
+    foreach ($d in Get-ChildItem -LiteralPath $skills -Directory -Filter "outlook-*") {
+        $p = Join-Path $d.FullName "scripts\$n"
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    throw "Unknown script '$name'. Scripts live in $here and the sibling outlook-* skills."
 }
 
 function Send-HostRequest($request, [int]$timeoutMs) {

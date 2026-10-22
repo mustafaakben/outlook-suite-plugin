@@ -29,16 +29,21 @@ function Run([string]$script, [object[]]$a) {
 function Item($id) { return $Namespace.GetItemFromID($id) }
 function JsonOf($r) { try { return ($r.Out | ConvertFrom-Json) } catch { return $null } }
 
-$me = $Namespace.CurrentUser.AddressEntry.GetExchangeUser().PrimarySmtpAddress
+# Send-gate steps use an address on the reserved .invalid TLD, which can never be delivered.
+$noSend = "preview-only@suite-test.invalid"
 $marker = "suite-test-marker"
 $tmpDir = Join-Path $env:TEMP "suite-compose-test"; New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 $f1 = Join-Path $tmpDir "attach-one.txt"; "one" | Set-Content $f1
 $f2 = Join-Path $tmpDir "attach-two.txt"; "two" | Set-Content $f2
 $sentBefore = $Namespace.GetDefaultFolder(5).Items.Count
 
+# Force the confirm gate on for the whole run, whatever the user's config says, and restore it after.
+$prevGate = $env:OUTLOOK_SUITE_REQUIRE_CONFIRM
+$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "1"
+
 try {
     # --- New draft ---
-    $r = Run "outlook-draft.ps1" @("-To", $me, "-Subject", "[suite-test] compose", "-Body", "Hello $marker`nSecond line https://example.com/x", "-Native", "-Attachment", $f1, "-Json")
+    $r = Run "outlook-draft.ps1" @("-To", $noSend, "-Subject", "[suite-test] compose", "-Body", "Hello $marker`nSecond line https://example.com/x", "-Native", "-Attachment", $f1, "-Json")
     $d = JsonOf $r; $it = Item $d.EntryID
     Check "draft -Native with attachment" ($r.Exit -eq 0 -and $it.HTMLBody -match "elementToProof" -and $it.Attachments.Count -eq 1 -and -not $it.Sent)
     $draftId = $d.EntryID
@@ -56,15 +61,15 @@ try {
     $it = Item $draftId; Check "draft-update -AppendBody (no confirm needed)" ($r.Exit -eq 0 -and $it.Body -match "Replaced" -and $it.Body -match "Appended line")
 
     # --- Send gates (preview only) ---
-    $r = Run "outlook-send.ps1" @("-To", $me, "-Subject", "[suite-test] send preview", "-Body", $marker)
+    $r = Run "outlook-send.ps1" @("-To", $noSend, "-Subject", "[suite-test] send preview", "-Body", $marker)
     Check "send previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW")
-    $r = Run "outlook-send.ps1" @("-To", "zzq-no-such-person-xq", "-Subject", "[suite-test] bad", "-Body", $marker, "-Confirm")
+    $r = Run "outlook-send.ps1" @("-To", "zzq-no-such-person-xq", "-Subject", "[suite-test] bad", "-Body", $marker)
     Check "send to unknown recipient fails before sending" ($r.Exit -eq 1 -and $r.Out -match "Unresolved")
     $r = Run "outlook-send-draft.ps1" @("-EntryID", $draftId)
     Check "send-draft previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW" -and -not (Item $draftId).Sent)
-    $r = Run "outlook-schedule-send.ps1" @("-To", $me, "-Subject", "[suite-test] past", "-Body", $marker, "-SendAt", (Get-Date).AddHours(-1).ToString("yyyy-MM-dd HH:mm"), "-Confirm")
+    $r = Run "outlook-schedule-send.ps1" @("-To", $noSend, "-Subject", "[suite-test] past", "-Body", $marker, "-SendAt", (Get-Date).AddHours(-1).ToString("yyyy-MM-dd HH:mm"))
     Check "schedule-send rejects a past time" ($r.Exit -eq 1)
-    $r = Run "outlook-voting.ps1" @("-To", $me, "-Subject", "[suite-test] vote", "-Body", $marker, "-Options", "A;B")
+    $r = Run "outlook-voting.ps1" @("-To", $noSend, "-Subject", "[suite-test] vote", "-Body", $marker, "-Options", "A;B")
     Check "voting previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW")
 
     # --- Reply in thread (from one of my own Sent Items; Reply addresses me) ---
@@ -82,6 +87,11 @@ try {
     $r = Run "outlook-reply.ps1" @("-DraftEntryID", $replyId, "-Body", "Second wording $marker", "-Confirm")
     $h = (Item $replyId).HTMLBody
     Check "reply update -Confirm replaces the block (one block, old text gone)" ($r.Exit -eq 0 -and $h -match "Second wording" -and $h -notmatch "Reply text" -and ([regex]::Matches($h, "suite-reply-start")).Count -eq 1)
+    # The reply draft is addressed to the real recipients of a Sent item: readdress it first, so even
+    # a broken gate could only send to an undeliverable address.
+    $rd = Item $replyId
+    while ($rd.Recipients.Count -gt 0) { $rd.Recipients.Remove(1) }
+    [void]$rd.Recipients.Add($noSend); [void]$rd.Recipients.ResolveAll(); $rd.Save()
     $r = Run "outlook-reply.ps1" @("-DraftEntryID", $replyId, "-Send")
     Check "reply -Send without -Confirm does not send" ($r.Exit -eq 0 -and $r.Out -match "not sent" -and -not (Item $replyId).Sent)
 
@@ -90,13 +100,17 @@ try {
     Check "reply -RemoveAutoSignature drops _MailAutoSig, keeps thread" ($r.Exit -eq 0 -and $h2 -notmatch "_MailAutoSig" -and $h2 -match "No sig")
 
     # --- Forward ---
-    $r = Run "outlook-forward.ps1" @("-EntryID", $src.EntryID, "-To", $me, "-Body", "FYI $marker", "-Json")
+    $r = Run "outlook-forward.ps1" @("-EntryID", $src.EntryID, "-To", $noSend, "-Body", "FYI $marker", "-Json")
     $fw = JsonOf $r; $fi = Item $fw.EntryID
-    Check "forward draft: note on top, attachments carried" ($r.Exit -eq 0 -and $fi.HTMLBody -match "FYI" -and $fi.Attachments.Count -ge $src.Attachments.Count -and $fi.To -ne "")
+    # Compare visible attachments only: Outlook's own Forward() drops duplicate hidden inline images
+    # (for example a signature image embedded twice), so the raw counts can differ.
+    $visible = { param($m) @($m.Attachments | Where-Object { -not $(try { $_.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x7FFE000B") } catch { $false }) }).Count }
+    Check "forward draft: note on top, attachments carried" ($r.Exit -eq 0 -and $fi.HTMLBody -match "FYI" -and (& $visible $fi) -ge (& $visible $src) -and $fi.To -ne "") "visible fwd=$(& $visible $fi) src=$(& $visible $src)"
 
     Check "nothing was sent during the test" ($Namespace.GetDefaultFolder(5).Items.Count -eq $sentBefore)
 }
 finally {
+    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = $prevGate
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
     $q = "@SQL=""urn:schemas:httpmail:textdescription"" LIKE '%$marker%' OR ""urn:schemas:httpmail:subject"" LIKE '[suite-test]%'"
     foreach ($pass in 1, 2) {

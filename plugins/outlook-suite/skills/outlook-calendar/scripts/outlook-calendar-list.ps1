@@ -1,131 +1,85 @@
 param(
     [int]$Days = 7,
     [switch]$Past,
-    [int]$Limit = 20
+    [int]$Limit = 20,
+    [datetime]$From,
+    [datetime]$To,
+    [ValidateSet("", "meeting", "hold", "firm", "allday")]
+    [string]$Kind = "",
+    [switch]$ConflictsOnly,
+    [string[]]$FirmHolds,
+    [string]$TimeZone = "",
+    [switch]$Json
 )
 
-# Outlook Calendar List Script
+# Outlook Calendar List: events in a range, recurrences expanded, each tagged
+# meeting / hold / firm / allday, with overlapping meetings flagged as conflicts.
 # Usage: .\outlook-calendar-list.ps1 -Days 7
 # Include past events: .\outlook-calendar-list.ps1 -Days 7 -Past
-# Limit results: .\outlook-calendar-list.ps1 -Days 14 -Limit 10
+# Exact range: .\outlook-calendar-list.ps1 -From "2026-10-26" -To "2026-10-30"
+# Only meetings: .\outlook-calendar-list.ps1 -Days 14 -Kind meeting
+# Only conflicts: .\outlook-calendar-list.ps1 -Days 14 -ConflictsOnly
+# JSON: .\outlook-calendar-list.ps1 -Days 7 -Json
+# Times shown in another zone (display only): .\outlook-calendar-list.ps1 -Days 7 -TimeZone Pacific
 
-$Outlook = $null
-$Namespace = $null
-$Calendar = $null
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_calendar.ps1")
 
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
-    }
-
-    $Namespace = $Outlook.GetNamespace("MAPI")
-    $Calendar = $Namespace.GetDefaultFolder(9)  # olFolderCalendar = 9
-
-    $items = $Calendar.Items
-    $items.Sort("[Start]")
-    $items.IncludeRecurrences = $true
-
-    # Set date range (fixed Outlook Restrict format)
+    $null = Connect-Outlook
+    Set-DisplayTimeZone $TimeZone
     $now = Get-Date
-    $restrictCulture = [System.Globalization.CultureInfo]::InvariantCulture
-    if ($Past) {
-        $startDate = $now.AddDays(-$Days).ToString("MM/dd/yyyy HH:mm", $restrictCulture)
-        $endDate = $now.AddDays($Days).ToString("MM/dd/yyyy HH:mm", $restrictCulture)
+    if ($From) {
+        $rangeFrom = $From
+        $rangeTo = if ($To) { $To.Date.AddDays(1) } else { $From.Date.AddDays($Days) }
+        if ($To -and $To.TimeOfDay.TotalMinutes -gt 0) { $rangeTo = $To }
+        $rangeDesc = "$($rangeFrom.ToString('ddd, MMM d')) to $($rangeTo.AddMinutes(-1).ToString('ddd, MMM d'))"
+    } elseif ($Past) {
+        $rangeFrom = $now.AddDays(-$Days); $rangeTo = $now.AddDays($Days)
         $rangeDesc = "Past $Days days and next $Days days"
     } else {
-        $startDate = $now.ToString("MM/dd/yyyy HH:mm", $restrictCulture)
-        $endDate = $now.AddDays($Days).ToString("MM/dd/yyyy HH:mm", $restrictCulture)
+        $rangeFrom = $now; $rangeTo = $now.AddDays($Days)
         $rangeDesc = "Next $Days days"
     }
 
-    $filter = "[Start] >= '$startDate' AND [Start] <= '$endDate'"
-    $events = $items.Restrict($filter)
+    $all = Get-CalendarEvents -Namespace $Namespace -From $rangeFrom -To $rangeTo -FirmPatterns (Get-FirmHoldPatterns -Override $FirmHolds)
+    Set-CalendarConflicts $all
+    $events = @($all | Where-Object { (-not $Kind -or $_.Kind -eq $Kind) -and (-not $ConflictsOnly -or $_.ConflictsWith.Count -gt 0) })
+    $total = $events.Count
+    $shown = @($events | Select-Object -First $Limit)
+    Add-CalendarEntryIds -Namespace $Namespace -Records $shown
+
+    if ($Json) {
+        Write-Json ([ordered]@{
+            Range  = [ordered]@{ From = Format-MailDateIso $rangeFrom; To = Format-MailDateIso $rangeTo }
+            Total  = $total
+            Shown  = $shown.Count
+            Events = @($shown | ForEach-Object { ConvertTo-EventJson $_ })
+        })
+        exit 0
+    }
 
     Write-Host "`n=== CALENDAR EVENTS ===" -ForegroundColor Cyan
     Write-Host "($rangeDesc)" -ForegroundColor Gray
     Write-Host ""
-
-    $count = 0
-    foreach ($event in $events) {
-        if ($count -ge $Limit) { break }
-        $count++
-
-        # Format date/time
-        $startTime = $event.Start
-        $endTime = $event.End
-        $duration = ($endTime - $startTime).TotalMinutes
-
-        # Determine if it's today, tomorrow, or another day
-        $dayLabel = ""
-        if ($startTime.Date -eq $now.Date) {
-            $dayLabel = "(Today)"
-        } elseif ($startTime.Date -eq $now.Date.AddDays(1)) {
-            $dayLabel = "(Tomorrow)"
-        } elseif ($startTime.Date -eq $now.Date.AddDays(-1)) {
-            $dayLabel = "(Yesterday)"
-        }
-
-        # All-day event formatting
-        if ($event.AllDayEvent) {
-            $timeStr = "All Day"
-        } else {
-            $timeStr = "$($startTime.ToString('h:mm tt')) - $($endTime.ToString('h:mm tt'))"
-        }
-
-        # Display event
-        Write-Host "$count. $($event.Subject)" -ForegroundColor Yellow
-        Write-Host "      EntryID: $($event.EntryID)" -ForegroundColor DarkGray
-        Write-Host "      Date: $($startTime.ToString('ddd, MMM d, yyyy')) $dayLabel" -ForegroundColor White
-        Write-Host "      Time: $timeStr" -ForegroundColor Gray
-
-        if ($event.Location) {
-            Write-Host "      Location: $($event.Location)" -ForegroundColor Gray
-        }
-
-        # Show organizer for meetings
-        if ($event.MeetingStatus -ne 0) {
-            Write-Host "      Organizer: $($event.Organizer)" -ForegroundColor Gray
-        }
-
-        # Show busy status
-        $busyStatus = switch ($event.BusyStatus) {
-            0 { "Free" }
-            1 { "Tentative" }
-            2 { "Busy" }
-            3 { "Out of Office" }
-            4 { "Working Elsewhere" }
-            default { "Unknown" }
-        }
-        if ($busyStatus -ne "Busy") {
-            Write-Host "      Status: $busyStatus" -ForegroundColor Gray
-        }
-
+    $i = 0
+    foreach ($e in $shown) {
+        $i++
+        Write-EventRecord $e -Prefix "$i. "
         Write-Host ""
     }
-
-    if ($count -eq 0) {
+    if ($total -eq 0) {
         Write-Host "No events found in this time range." -ForegroundColor Gray
     } else {
-        Write-Host "--- Total: $count events ---" -ForegroundColor Cyan
+        $m = @($events | Where-Object { $_.Kind -eq "meeting" }).Count
+        $h = @($events | Where-Object { $_.Kind -eq "hold" }).Count
+        $fm = @($events | Where-Object { $_.Kind -eq "firm" }).Count
+        $a = @($events | Where-Object { $_.Kind -eq "allday" }).Count
+        $c = @($events | Where-Object { $_.ConflictsWith.Count -gt 0 }).Count
+        $more = if ($total -gt $shown.Count) { " (showing $($shown.Count); raise -Limit for more)" } else { "" }
+        Write-Host "--- Total: $total events: $m meetings, $h holds, $fm firm, $a all-day, $c in conflict$more ---" -ForegroundColor Cyan
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($Calendar) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Calendar) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

@@ -24,6 +24,10 @@ $tmp = Join-Path $env:TEMP "suite-extras-test"; New-Item -ItemType Directory -Fo
 $sandbox = $null; foreach ($f in $Namespace.GetDefaultFolder(3).Folders) { if ($f.Name -eq "_suite-test") { $sandbox = $f } }
 if (-not $sandbox) { $sandbox = $Namespace.GetDefaultFolder(3).Folders.Add("_suite-test") }
 
+# Force the confirm gate on for the whole run, whatever the user's config says, and restore it after.
+$prevGate = $env:OUTLOOK_SUITE_REQUIRE_CONFIRM
+$env:OUTLOOK_SUITE_REQUIRE_CONFIRM = "1"
+
 try {
     # --- Read-only on real mail ---
     $r = Run "outlook-selection.ps1" @("-Json")
@@ -127,6 +131,7 @@ try {
     if ($sf) { $sf.Delete() }
 }
 finally {
+    $env:OUTLOOK_SUITE_REQUIRE_CONFIRM = $prevGate
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     $q = "@SQL=""urn:schemas:httpmail:textdescription"" LIKE '%$marker%' OR ""urn:schemas:httpmail:subject"" LIKE '[suite-test]%'"
     Get-ChildItem (Join-Path $env:APPDATA "Microsoft\Signatures") -Filter "suite-test-sig*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force

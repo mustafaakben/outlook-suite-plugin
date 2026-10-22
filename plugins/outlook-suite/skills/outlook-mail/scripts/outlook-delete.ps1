@@ -20,7 +20,7 @@ try {
     $null = Connect-Outlook
     $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
     $mode = if ($Permanent) { "PERMANENT DELETE (cannot be undone)" } else { "DELETE (move to Deleted Items)" }
-    if (-not (Confirm-ItemAction -Action "delete" -Title $mode -Item $email -Confirmed $Confirm -What "the delete")) { exit 0 }
+    if ((Confirm-ItemAction -Action "delete" -Title $mode -Item $email -Confirmed $Confirm -What "the delete") -ne $true) { exit 0 }
 
     $rec = ConvertTo-MailRecord $email
     if (-not $Permanent) {

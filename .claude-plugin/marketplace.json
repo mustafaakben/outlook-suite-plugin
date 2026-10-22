@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "outlook-suite-marketplace",
-  "version": "2.2.1",
+  "version": "3.0.0",
   "description": "Plugin marketplace for Outlook Suite skills (mail, calendar, contacts, tasks, notes).",
   "metadata": {
     "description": "Plugin marketplace for Outlook Suite skills (mail, calendar, contacts, tasks, notes)."
@@ -14,7 +14,7 @@
     {
       "name": "outlook-suite",
       "description": "Local Microsoft Outlook automation skills via PowerShell COM on Windows.",
-      "version": "2.2.1",
+      "version": "3.0.0",
       "author": {
         "name": "Mustafa Akben",
         "email": "mustafaakben@gmail.com"

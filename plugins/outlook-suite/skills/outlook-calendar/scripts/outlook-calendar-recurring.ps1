@@ -16,6 +16,12 @@ param(
     [string]$Attendees = "",
     [int]$Occurrences = 0,
     [datetime]$EndByDate,
+    [ValidateSet("", "Free", "Tentative", "Busy", "OutOfOffice", "WorkingElsewhere")]
+    [string]$BusyStatus = "",
+    [string]$Categories = "",
+    [switch]$NoReminder,
+    [switch]$Confirm,
+    [switch]$Json,
 
     # Weekly options
     [switch]$Monday,
@@ -34,248 +40,142 @@ param(
     [string]$DayOfWeek = ""
 )
 
-# Outlook Calendar Recurring Event Script
-# Create a recurring calendar event
+# Outlook Calendar Recurring: create a recurring hold or meeting series.
+# Without -Attendees it is saved right away. With -Attendees it sends invitations,
+# so it previews unless -Confirm.
 # Usage: .\outlook-calendar-recurring.ps1 -Subject "Daily standup" -Start "2026-02-10 09:00" -Pattern Daily
 # Weekly: .\outlook-calendar-recurring.ps1 -Subject "Team meeting" -Start "2026-02-10 10:00" -Pattern Weekly -Monday -Wednesday -Friday
 # Monthly: .\outlook-calendar-recurring.ps1 -Subject "Review" -Start "2026-02-10 14:00" -Pattern Monthly -DayOfMonth 15
+# Nth weekday: .\outlook-calendar-recurring.ps1 -Subject "Board" -Start "2026-02-10 14:00" -Pattern Monthly -WeekNumber Second -DayOfWeek Tuesday
 # With end: .\outlook-calendar-recurring.ps1 -Subject "Sprint" -Start "2026-02-10" -Pattern Weekly -Occurrences 10
+# Meeting series: .\outlook-calendar-recurring.ps1 -Subject "1:1" -Start "2026-02-10 10:00" -Pattern Weekly -Attendees "jane@example.com" -Confirm
 
-# Recurrence pattern constants
-# olRecursDaily = 0
-# olRecursWeekly = 1
-# olRecursMonthly = 2
-# olRecursMonthNth = 3 (e.g., "second Tuesday of month")
-# olRecursYearly = 5
-# olRecursYearNth = 6
+. (Join-Path $PSScriptRoot "_common.ps1")
+. (Join-Path $PSScriptRoot "_calendar.ps1")
 
-# Day of week mask
-# olSunday = 1, olMonday = 2, olTuesday = 4, olWednesday = 8
-# olThursday = 16, olFriday = 32, olSaturday = 64
-
+# Day of week mask: olSunday = 1, olMonday = 2, ... olSaturday = 64
 $dayMask = @{
-    "Sunday" = 1
-    "Monday" = 2
-    "Tuesday" = 4
-    "Wednesday" = 8
-    "Thursday" = 16
-    "Friday" = 32
-    "Saturday" = 64
-    "Day" = 127
-    "Weekday" = 62
-    "WeekendDay" = 65
+    "Sunday" = 1; "Monday" = 2; "Tuesday" = 4; "Wednesday" = 8; "Thursday" = 16; "Friday" = 32; "Saturday" = 64
+    "Day" = 127; "Weekday" = 62; "WeekendDay" = 65
 }
-
-$weekNumberMap = @{
-    "First" = 1
-    "Second" = 2
-    "Third" = 3
-    "Fourth" = 4
-    "Last" = 5
-}
-
+$weekNumberMap = @{ "First" = 1; "Second" = 2; "Third" = 3; "Fourth" = 4; "Last" = 5 }
 $hasWeekNumber = -not [string]::IsNullOrWhiteSpace($WeekNumber)
 $hasDayOfWeek = -not [string]::IsNullOrWhiteSpace($DayOfWeek)
 
-if ($Pattern -eq "Monthly" -and ($hasWeekNumber -xor $hasDayOfWeek)) {
-    throw "For monthly nth-weekday recurrence, provide both -WeekNumber and -DayOfWeek."
-}
-
-$Outlook = $null
-$appointment = $null
-
 try {
-    # Connect to Outlook - try active instance first
-    try {
-        $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-    } catch {
-        $Outlook = New-Object -ComObject Outlook.Application
-        Start-Sleep -Milliseconds 500
+    if ($Pattern -in @("Monthly", "Yearly") -and ($hasWeekNumber -xor $hasDayOfWeek)) {
+        throw "For an nth-weekday recurrence, give both -WeekNumber and -DayOfWeek."
     }
+    $null = Connect-Outlook
+    $appt = $Outlook.CreateItem(1)   # olAppointmentItem
+    $appt.Subject = $Subject
+    $appt.Start = $Start
+    $appt.Duration = $Duration
+    if ($Location) { $appt.Location = $Location }
+    if ($Body) { $appt.Body = $Body }
+    if ($BusyStatus) { $appt.BusyStatus = $script:BusyValues[$BusyStatus] }
+    if ($Categories) { $appt.Categories = $Categories }
+    if ($NoReminder) { $appt.ReminderSet = $false }
 
-    # Create appointment item (olAppointmentItem = 1)
-    $appointment = $Outlook.CreateItem(1)
-
-    $appointment.Subject = $Subject
-    $appointment.Start = $Start
-    $appointment.Duration = $Duration
-
-    if ($Location) {
-        $appointment.Location = $Location
-    }
-
-    if ($Body) {
-        $appointment.Body = $Body
-    }
-
-    # Get recurrence pattern
-    $recurrence = $appointment.GetRecurrencePattern()
-
-    # Set the pattern type and options
+    $rp = $appt.GetRecurrencePattern()
+    $desc = ""
+    $mask = 0
     switch ($Pattern) {
         "Daily" {
-            $recurrence.RecurrenceType = 0  # olRecursDaily
-            $recurrence.Interval = $Interval
+            $rp.RecurrenceType = 0   # olRecursDaily
+            $rp.Interval = $Interval
+            $desc = if ($Interval -eq 1) { "Every day" } else { "Every $Interval days" }
         }
-
         "Weekly" {
-            $recurrence.RecurrenceType = 1  # olRecursWeekly
-            $recurrence.Interval = $Interval
-
-            # Calculate day of week mask
-            $mask = 0
-            if ($Monday) { $mask += 2 }
-            if ($Tuesday) { $mask += 4 }
-            if ($Wednesday) { $mask += 8 }
-            if ($Thursday) { $mask += 16 }
-            if ($Friday) { $mask += 32 }
-            if ($Saturday) { $mask += 64 }
-            if ($Sunday) { $mask += 1 }
-
-            # If no days specified, use the day of the start date
-            if ($mask -eq 0) {
-                $startDayName = $Start.DayOfWeek.ToString()
-                $mask = $dayMask[$startDayName]
-            }
-
-            $recurrence.DayOfWeekMask = $mask
+            $rp.RecurrenceType = 1   # olRecursWeekly
+            $rp.Interval = $Interval
+            if ($Monday) { $mask += 2 }; if ($Tuesday) { $mask += 4 }; if ($Wednesday) { $mask += 8 }
+            if ($Thursday) { $mask += 16 }; if ($Friday) { $mask += 32 }; if ($Saturday) { $mask += 64 }; if ($Sunday) { $mask += 1 }
+            if ($mask -eq 0) { $mask = $dayMask[$Start.DayOfWeek.ToString()] }
+            $rp.DayOfWeekMask = $mask
+            $names = @(foreach ($d in "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday") { if ($mask -band $dayMask[$d]) { $d.Substring(0, 3) } })
+            $every = if ($Interval -eq 1) { "Every week" } else { "Every $Interval weeks" }
+            $desc = "$every on $($names -join ', ')"
         }
-
         "Monthly" {
-            if ($hasWeekNumber -and $hasDayOfWeek) {
-                # "Third Tuesday of month" style
-                $recurrence.RecurrenceType = 3  # olRecursMonthNth
-                $recurrence.Instance = $weekNumberMap[$WeekNumber]
-                $recurrence.DayOfWeekMask = $dayMask[$DayOfWeek]
+            if ($hasWeekNumber) {
+                $rp.RecurrenceType = 3   # olRecursMonthNth
+                $rp.Instance = $weekNumberMap[$WeekNumber]
+                $rp.DayOfWeekMask = $dayMask[$DayOfWeek]
+                $desc = "$WeekNumber $DayOfWeek of every $Interval month(s)"
             } else {
-                # "15th of each month" style
-                $recurrence.RecurrenceType = 2  # olRecursMonthly
-                if ($DayOfMonth -gt 0) {
-                    $recurrence.DayOfMonth = $DayOfMonth
-                } else {
-                    $recurrence.DayOfMonth = $Start.Day
-                }
-            }
-            $recurrence.Interval = $Interval
-        }
-
-        "Yearly" {
-            if ($hasWeekNumber -and $hasDayOfWeek) {
-                $recurrence.RecurrenceType = 6  # olRecursYearNth
-                $recurrence.Instance = $weekNumberMap[$WeekNumber]
-                $recurrence.DayOfWeekMask = $dayMask[$DayOfWeek]
-                $recurrence.MonthOfYear = $Start.Month
-            } else {
-                $recurrence.RecurrenceType = 5  # olRecursYearly
-                $recurrence.DayOfMonth = $Start.Day
-                $recurrence.MonthOfYear = $Start.Month
-            }
-            $recurrence.Interval = $Interval
-        }
-    }
-
-    # Set end condition
-    if ($Occurrences -gt 0) {
-        $recurrence.Occurrences = $Occurrences
-    } elseif ($EndByDate) {
-        $recurrence.PatternEndDate = $EndByDate
-    } else {
-        # Default: no end date (but Outlook may set a default)
-        $recurrence.NoEndDate = $true
-    }
-
-    # Add attendees if provided (makes it a meeting)
-    if ($Attendees) {
-        $attendeeList = $Attendees -split "[;,]" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        foreach ($attendee in $attendeeList) {
-            $appointment.Recipients.Add($attendee)
-        }
-        $appointment.MeetingStatus = 1  # olMeeting
-    }
-
-    $appointment.Save()
-
-    # If meeting, send invites
-    if ($Attendees) {
-        $appointment.Send()
-    }
-
-    Write-Host "`n=== RECURRING EVENT CREATED ===" -ForegroundColor Green
-    Write-Host "Subject: $Subject" -ForegroundColor Yellow
-    Write-Host "First occurrence: $($Start.ToString('ddd, MMM d, yyyy'))"
-    Write-Host "Time: $($Start.ToString('h:mm tt')) ($Duration min)" -ForegroundColor Gray
-
-    if ($Location) {
-        Write-Host "Location: $Location" -ForegroundColor Gray
-    }
-
-    Write-Host "`nRecurrence:" -ForegroundColor Cyan
-
-    switch ($Pattern) {
-        "Daily" {
-            if ($Interval -eq 1) {
-                Write-Host "  Every day" -ForegroundColor Gray
-            } else {
-                Write-Host "  Every $Interval days" -ForegroundColor Gray
-            }
-        }
-
-        "Weekly" {
-            $days = @()
-            if ($Monday -or ($mask -band 2)) { $days += "Mon" }
-            if ($Tuesday -or ($mask -band 4)) { $days += "Tue" }
-            if ($Wednesday -or ($mask -band 8)) { $days += "Wed" }
-            if ($Thursday -or ($mask -band 16)) { $days += "Thu" }
-            if ($Friday -or ($mask -band 32)) { $days += "Fri" }
-            if ($Saturday -or ($mask -band 64)) { $days += "Sat" }
-            if ($Sunday -or ($mask -band 1)) { $days += "Sun" }
-
-            $daysList = $days -join ", "
-            if ($Interval -eq 1) {
-                Write-Host "  Every week on $daysList" -ForegroundColor Gray
-            } else {
-                Write-Host "  Every $Interval weeks on $daysList" -ForegroundColor Gray
-            }
-        }
-
-        "Monthly" {
-            if ($hasWeekNumber -and $hasDayOfWeek) {
-                Write-Host "  $WeekNumber $DayOfWeek of every $Interval month(s)" -ForegroundColor Gray
-            } else {
+                $rp.RecurrenceType = 2   # olRecursMonthly
                 $day = if ($DayOfMonth -gt 0) { $DayOfMonth } else { $Start.Day }
-                Write-Host "  Day $day of every $Interval month(s)" -ForegroundColor Gray
+                $rp.DayOfMonth = $day
+                $desc = "Day $day of every $Interval month(s)"
             }
+            $rp.Interval = $Interval
         }
-
         "Yearly" {
-            Write-Host "  Every $Interval year(s) on $($Start.ToString('MMMM d'))" -ForegroundColor Gray
+            if ($hasWeekNumber) {
+                $rp.RecurrenceType = 6   # olRecursYearNth
+                $rp.Instance = $weekNumberMap[$WeekNumber]
+                $rp.DayOfWeekMask = $dayMask[$DayOfWeek]
+                $rp.MonthOfYear = $Start.Month
+                $desc = "$WeekNumber $DayOfWeek of $($Start.ToString('MMMM')) every $Interval year(s)"
+            } else {
+                $rp.RecurrenceType = 5   # olRecursYearly
+                $rp.DayOfMonth = $Start.Day
+                $rp.MonthOfYear = $Start.Month
+                $desc = "Every $Interval year(s) on $($Start.ToString('MMMM d'))"
+            }
+            $rp.Interval = $Interval
         }
     }
+    if ($Occurrences -gt 0) { $rp.Occurrences = $Occurrences; $desc += ", $Occurrences times" }
+    elseif ($PSBoundParameters.ContainsKey("EndByDate")) { $rp.PatternEndDate = $EndByDate; $desc += ", until $($EndByDate.ToString('MMM d, yyyy'))" }
+    else { $rp.NoEndDate = $true; $desc += ", no end date" }
 
-    # End condition
-    if ($Occurrences -gt 0) {
-        Write-Host "  Ends after $Occurrences occurrences" -ForegroundColor Gray
-    } elseif ($EndByDate) {
-        Write-Host "  Ends on $($EndByDate.ToString('MMM d, yyyy'))" -ForegroundColor Gray
+    $names = @(Split-AttendeeList $Attendees)
+    $resolved = @()
+    if ($names.Count -gt 0) {
+        $bad = @()
+        foreach ($n in $names) {
+            $a = Resolve-CalendarAttendee -Namespace $Namespace -Text $n
+            if ($a.Resolved) { $resolved += $a } else { $bad += "${n}: $($a.Note)" }
+        }
+        if ($bad.Count -gt 0) { Stop-WithError "Some attendees could not be resolved. Nothing was saved or sent.`n  $($bad -join "`n  ")" }
+        $appt.MeetingStatus = 1   # olMeeting
+        foreach ($a in $resolved) { [void]$appt.Recipients.Add($a.Email) }
+        if ($Confirm -or -not (Test-ConfirmRequired -Action "send")) {
+            Assert-OutlookRecipients $appt
+            $appt.Save()
+            $appt.Send()
+        } elseif ($Json) {
+            Set-CalendarPreviewJson -Action "send" -What "creating the series and sending invitations" -Rec (ConvertTo-EventRecord $appt) -Details ([ordered]@{ Repeats = $desc; WouldInvite = @($resolved | ForEach-Object { $_.Email }) })
+            $appt.Close(1)
+            Write-CalendarPreview
+            exit 0
+        } else {
+            Write-Host "=== NEW MEETING SERIES (PREVIEW) ===" -ForegroundColor Yellow
+            Write-EventRecord (ConvertTo-EventRecord $appt) -Prefix "  "
+            Write-Host "      Repeats: $desc" -ForegroundColor Cyan
+            Write-Host "      Would invite: $(($resolved | ForEach-Object { "$($_.Name) <$($_.Email)>" }) -join '; ')" -ForegroundColor Cyan
+            $null = Approve-Action -Action "send" -Confirmed $false -What "creating the series and sending invitations"
+            $appt.Close(1)
+            exit 0
+        }
     } else {
-        Write-Host "  No end date" -ForegroundColor Gray
+        $appt.Save()
     }
 
-    if ($Attendees) {
-        Write-Host "`nMeeting invites sent to:" -ForegroundColor Cyan
-        Write-Host "  $Attendees" -ForegroundColor Gray
+    $rec = ConvertTo-EventRecord $appt
+    if ($Json) {
+        $o = ConvertTo-EventJson $rec; $o.Action = "recurring"; $o.Result = $(if ($resolved.Count) { "invites sent" } else { "created" }); $o.Repeats = $desc
+        $o.Invited = @($resolved | ForEach-Object { $_.Email })
+        Write-Json $o; exit 0
     }
+    $title = if ($resolved.Count) { "RECURRING MEETING CREATED, INVITES SENT" } else { "RECURRING EVENT CREATED" }
+    Write-Host "=== $title ===" -ForegroundColor Green
+    Write-EventRecord $rec -Prefix "  "
+    Write-Host "      Repeats: $desc" -ForegroundColor Cyan
+    if ($resolved.Count) { Write-Host "      Invited: $(($resolved | ForEach-Object { $_.Email }) -join '; ')" -ForegroundColor Cyan }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-}
-finally {
-    if ($appointment) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($appointment) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

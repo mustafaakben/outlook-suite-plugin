@@ -17,7 +17,7 @@ param(
 try {
     $null = Connect-Outlook
     $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
-    if (-not (Confirm-ItemAction -Action "print" -Title "PRINT EMAIL" -Item $email -Confirmed $Confirm -What "printing")) { exit 0 }
+    if ((Confirm-ItemAction -Action "print" -Title "PRINT EMAIL" -Item $email -Confirmed $Confirm -What "printing") -ne $true) { exit 0 }
     $email.PrintOut()
     Write-ActionResult -Title "SENT TO DEFAULT PRINTER" -Item $email -Json:$Json -Action "print"
 }
