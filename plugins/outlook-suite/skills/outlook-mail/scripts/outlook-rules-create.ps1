@@ -1,281 +1,225 @@
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string]$Name,
+    [string]$Mailbox = "",
+    [switch]$SendRule,
 
-    [string]$FromAddress = "",
+    # Conditions (several values: separate with ";", any one matches)
+    [Alias("From")][string]$FromAddress = "",
     [string]$SubjectContains = "",
     [string]$BodyContains = "",
+    [string]$BodyOrSubjectContains = "",
+    [string]$HeaderContains = "",
+    [string]$SenderAddressContains = "",
+    [string]$RecipientAddressContains = "",
     [string]$SentTo = "",
+    [switch]$HasAttachment,
+    [ValidateSet("", "Low", "Normal", "High")][string]$Importance = "",
+    [string]$Category = "",
+    [switch]$OnlyToMe,
+    [switch]$ToMe,
+    [switch]$CcMe,
+    [switch]$ToOrCcMe,
+    [switch]$NotToMe,
+    [switch]$MeetingInviteOrUpdate,
+    [string]$Account = "",
+
+    # Exceptions
+    [string]$ExceptFrom = "",
+    [string]$ExceptSubjectContains = "",
+    [string]$ExceptBodyContains = "",
+    [string]$ExceptSenderAddressContains = "",
+    [switch]$ExceptHasAttachment,
+    [switch]$ExceptOnlyToMe,
+    [ValidateSet("", "Low", "Normal", "High")][string]$ExceptImportance = "",
+    [string]$ExceptCategory = "",
+    [switch]$ExceptMeetingInviteOrUpdate,
+
+    # Actions
     [string]$MoveToFolder = "",
     [string]$CopyToFolder = "",
     [string]$ForwardTo = "",
+    [string]$ForwardAsAttachmentTo = "",
     [string]$RedirectTo = "",
     [string]$AssignCategory = "",
-    [switch]$HasAttachment,
+    [switch]$ClearCategories,
     [switch]$Delete,
     [switch]$DeletePermanently,
-    [switch]$StopProcessing,
+    [ValidateSet("", "Today", "Tomorrow", "ThisWeek", "NextWeek", "NoDate")][string]$MarkAsTask = "",
+    [string]$FlagText = "Follow up",
+    [string]$NewItemAlert = "",
     [switch]$DesktopAlert,
+    [string]$PlaySound = "",
+    [switch]$StopProcessing,
+    # Send-rule actions
+    [string]$CcTo = "",
+    [switch]$NotifyRead,
+    [switch]$NotifyDelivery,
+
     [switch]$Disabled,
     [switch]$Force,
-    [bool]$StripLinks = $true
+    [switch]$RunNow,
+    [string]$RunFolder = "Inbox",
+    [switch]$Confirm,
+    [switch]$Json,
+    [bool]$StripLinks = $true   # legacy, ignored
 )
 
-# Helper: strip URLs from text to reduce context window bloat
-function Strip-Links([string]$text) {
-    if (-not $text) { return $text }
-    return [regex]::Replace($text, 'https?://[^\s<>"''`\)]+', '[URL]')
-}
+# Outlook Rules Create: make a rule with any condition, exception and action the Outlook object
+# model supports (conditions like size/date range and actions like mark read, print or run script
+# exist only in the Rules Wizard; they can be listed and switched on/off, not created).
+# Values with ";" mean "any of these". Gated: previews unless -Confirm.
+# -Force replaces a rule with the same name. -RunNow runs it on -RunFolder after saving.
+# -Disabled creates it switched off. -SendRule makes a rule for messages you send.
+#
+# Usage: .\outlook-rules-create.ps1 -Name "Newsletters" -SenderAddressContains "news@;digest@" -MoveToFolder "Inbox/News" -Confirm
+# Usage: .\outlook-rules-create.ps1 -Name "Boss" -FromAddress "boss@x.com" -AssignCategory "!Urgent" -ExceptSubjectContains "FYI" -Confirm
+# Usage: .\outlook-rules-create.ps1 -Name "Cc archive" -SendRule -SubjectContains "[client]" -CcTo "archive@x.com" -Confirm
 
-# Outlook Rules Create Script
-# Create an email rule with conditions and actions
-# Usage: .\outlook-rules-create.ps1 -Name "Archive newsletters" -FromAddress "newsletter@example.com" -MoveToFolder "Archive"
-# With category: .\outlook-rules-create.ps1 -Name "Important" -SubjectContains "urgent" -AssignCategory "Important"
-# Forward rule: .\outlook-rules-create.ps1 -Name "Forward reports" -SubjectContains "report" -ForwardTo "boss@example.com"
-# Attachment rule: .\outlook-rules-create.ps1 -Name "Flag attachments" -HasAttachment -AssignCategory "Has Files"
+. (Join-Path $PSScriptRoot "_common.ps1")
 
-$Outlook = $null
-$Namespace = $null
-$rules = $null
-$rule = $null
+# Always returns a string array (the comma stops PowerShell from unrolling a one-item array to
+# a plain string; Outlook's Text/Categories properties need an array).
+function Split-Values([string]$s) { return , [string[]]@($s -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 
 try {
-    # Validate: at least one condition required (before COM init)
-    $hasCondition = $FromAddress -or $SubjectContains -or $BodyContains -or $SentTo -or $HasAttachment
-    if (-not $hasCondition) {
-        Write-Host "`nAt least one condition is required." -ForegroundColor Red
-        Write-Host "Available conditions: -FromAddress, -SubjectContains, -BodyContains, -SentTo, -HasAttachment" -ForegroundColor Gray
-    } else {
-        # Validate: at least one action required (before COM init)
-        $hasAction = $MoveToFolder -or $CopyToFolder -or $ForwardTo -or $RedirectTo -or $AssignCategory -or $Delete -or $DeletePermanently -or $StopProcessing -or $DesktopAlert
-        if (-not $hasAction) {
-            Write-Host "`nAt least one action is required." -ForegroundColor Red
-            Write-Host "Available actions: -MoveToFolder, -CopyToFolder, -ForwardTo, -RedirectTo, -AssignCategory, -Delete, -DeletePermanently, -StopProcessing, -DesktopAlert" -ForegroundColor Gray
-        } else {
-            # Connect to Outlook - try active instance first
-            try {
-                $Outlook = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Outlook.Application")
-            } catch {
-                $Outlook = New-Object -ComObject Outlook.Application
-                Start-Sleep -Milliseconds 500
-            }
+    $null = Connect-Outlook
+    $store = Get-RuleStore -Namespace $Namespace -Mailbox $Mailbox
+    $rules = Get-StoreRules $store
 
-            $Namespace = $Outlook.GetNamespace("MAPI")
+    $existing = $null
+    for ($i = 1; $i -le $rules.Count; $i++) { if ($rules.Item($i).Name -ieq $Name) { $existing = $rules.Item($i) } }
+    if ($existing -and -not $Force) { Stop-WithError "A rule named '$Name' already exists in $($store.DisplayName)." "Use -Force to replace it, or outlook-rules-manage.ps1 to change it." }
 
-            # Get rules collection
-            $rules = $Namespace.DefaultStore.GetRules()
+    # Folders for move/copy must be in the rule's mailbox.
+    function Resolve-RuleFolder([string]$p) {
+        $f = $null
+        try { $f = Resolve-OutlookFolder -Namespace $Namespace -Path "$($store.DisplayName)/$p" } catch { $f = Resolve-OutlookFolder -Namespace $Namespace -Path $p }
+        if ($f.StoreID -ne $store.StoreID) { throw "Folder '$p' is not in mailbox '$($store.DisplayName)'; rule folders must be in the same mailbox." }
+        return $f
+    }
+    $moveFolder = if ($MoveToFolder) { Resolve-RuleFolder $MoveToFolder } else { $null }
+    $copyFolder = if ($CopyToFolder) { Resolve-RuleFolder $CopyToFolder } else { $null }
 
-            # Check if rule name already exists
-            $nameExists = $false
-            foreach ($existingRule in $rules) {
-                if ($existingRule.Name -eq $Name) {
-                    $nameExists = $true
-                    break
-                }
-            }
+    $hasCondition = $FromAddress -or $SubjectContains -or $BodyContains -or $BodyOrSubjectContains -or $HeaderContains -or $SenderAddressContains -or $RecipientAddressContains -or $SentTo -or $HasAttachment -or $Importance -or $Category -or $OnlyToMe -or $ToMe -or $CcMe -or $ToOrCcMe -or $NotToMe -or $MeetingInviteOrUpdate -or $Account
+    $hasAction = $MoveToFolder -or $CopyToFolder -or $ForwardTo -or $ForwardAsAttachmentTo -or $RedirectTo -or $AssignCategory -or $ClearCategories -or $Delete -or $DeletePermanently -or $MarkAsTask -or $NewItemAlert -or $DesktopAlert -or $PlaySound -or $StopProcessing -or $CcTo -or $NotifyRead -or $NotifyDelivery
+    if (-not $hasCondition) { Stop-WithError "Give at least one condition (for example -FromAddress, -SubjectContains, -HasAttachment)." }
+    if (-not $hasAction) { Stop-WithError "Give at least one action (for example -MoveToFolder, -AssignCategory, -ForwardTo)." }
 
-            if ($nameExists -and -not $Force) {
-                Write-Host "`nRule '$Name' already exists." -ForegroundColor Yellow
-                Write-Host "Note: Outlook allows duplicate rule names." -ForegroundColor Gray
-                Write-Host "Use -Force to create anyway, or use a different name." -ForegroundColor Gray
-            } else {
-                if ($nameExists -and $Force) {
-                    Write-Host "`nNote: Creating rule with duplicate name '$Name' (-Force specified)." -ForegroundColor Yellow
-                }
+    # Plain-language summary for the preview.
+    $summary = @()
+    foreach ($p in $PSBoundParameters.Keys) {
+        if ($p -in "Name", "Mailbox", "Confirm", "Json", "Force", "StripLinks", "RunFolder", "FlagText") { continue }
+        $v = $PSBoundParameters[$p]
+        $summary += $(if ($v -is [System.Management.Automation.SwitchParameter]) { $p } else { "${p}: $v" })
+    }
+    if (-not ($Confirm -or -not (Test-ConfirmRequired -Action "rules"))) {
+        Write-Host "=== NEW RULE (PREVIEW) ===" -ForegroundColor Yellow
+        Write-Host "  Mailbox: $($store.DisplayName)   Name: $Name   $(if ($SendRule) { 'send rule' } else { 'receive rule' })$(if ($Disabled) { ', created OFF' })"
+        foreach ($s in $summary) { Write-Host "  $s" -ForegroundColor Cyan }
+        if ($existing) { Write-Host "  Replaces the existing rule with this name." -ForegroundColor Yellow }
+        Approve-Action -Action "rules" -Confirmed $false -What "creating the rule" | Out-Null
+        exit 0
+    }
 
-                # Create new rule (olRuleReceive = 0 for incoming mail)
-                $rule = $rules.Create($Name, 0)
+    if ($existing) { $rules.Remove($existing.Name) }
+    $rule = $rules.Create($Name, $(if ($SendRule) { 1 } else { 0 }))
+    $c = $rule.Conditions; $x = $rule.Exceptions; $a = $rule.Actions
 
-                # Track conditions and actions for display
-                $conditionsList = [System.Collections.ArrayList]::new()
-                $actionsList = [System.Collections.ArrayList]::new()
-
-                # === SET CONDITIONS ===
-
-                if ($FromAddress) {
-                    $rule.Conditions.From.Enabled = $true
-                    $rule.Conditions.From.Recipients.Add($FromAddress) | Out-Null
-                    if (-not $rule.Conditions.From.Recipients.ResolveAll()) {
-                        Write-Host "  Warning: '$FromAddress' could not be resolved in address book. Rule will still match by email address." -ForegroundColor Yellow
-                    }
-                    [void]$conditionsList.Add("From: $FromAddress")
-                }
-
-                if ($SubjectContains) {
-                    $rule.Conditions.Subject.Enabled = $true
-                    $rule.Conditions.Subject.Text = @($SubjectContains)
-                    [void]$conditionsList.Add("Subject contains: $SubjectContains")
-                }
-
-                if ($BodyContains) {
-                    $rule.Conditions.Body.Enabled = $true
-                    $rule.Conditions.Body.Text = @($BodyContains)
-                    [void]$conditionsList.Add("Body contains: $BodyContains")
-                }
-
-                if ($SentTo) {
-                    $rule.Conditions.SentTo.Enabled = $true
-                    $rule.Conditions.SentTo.Recipients.Add($SentTo) | Out-Null
-                    if (-not $rule.Conditions.SentTo.Recipients.ResolveAll()) {
-                        Write-Host "  Warning: '$SentTo' could not be resolved in address book. Rule will still match by email address." -ForegroundColor Yellow
-                    }
-                    [void]$conditionsList.Add("Sent to: $SentTo")
-                }
-
-                if ($HasAttachment) {
-                    $rule.Conditions.HasAttachment.Enabled = $true
-                    [void]$conditionsList.Add("Has attachment")
-                }
-
-                # === SET ACTIONS ===
-
-                # Helper: find folder by name in Inbox subfolders, then store root subfolders
-                function Find-OutlookFolder {
-                    param([string]$FolderName, $NS)
-                    $found = $null
-                    # Search Inbox subfolders first
-                    $inbox = $NS.GetDefaultFolder(6)
-                    try { $found = $inbox.Folders.Item($FolderName) } catch {}
-                    if ($found) { return $found }
-                    # Search store root subfolders
-                    $root = $NS.DefaultStore.GetRootFolder()
-                    try { $found = $root.Folders.Item($FolderName) } catch {}
-                    if ($found) { return $found }
-                    # Walk Inbox subfolders by name comparison
-                    foreach ($folder in $inbox.Folders) {
-                        if ($folder.Name -eq $FolderName) { return $folder }
-                    }
-                    return $null
-                }
-
-                if ($MoveToFolder) {
-                    $targetFolder = Find-OutlookFolder -FolderName $MoveToFolder -NS $Namespace
-                    if ($targetFolder) {
-                        $rule.Actions.MoveToFolder.Enabled = $true
-                        $rule.Actions.MoveToFolder.Folder = $targetFolder
-                        [void]$actionsList.Add("Move to: $MoveToFolder")
-                    } else {
-                        Write-Host "  Warning: Folder '$MoveToFolder' not found. Skipping move action." -ForegroundColor Yellow
-                        Write-Host "  Available folders can be listed with outlook-folders.ps1" -ForegroundColor Gray
-                    }
-                }
-
-                if ($CopyToFolder) {
-                    $copyTarget = Find-OutlookFolder -FolderName $CopyToFolder -NS $Namespace
-                    if ($copyTarget) {
-                        $rule.Actions.CopyToFolder.Enabled = $true
-                        $rule.Actions.CopyToFolder.Folder = $copyTarget
-                        [void]$actionsList.Add("Copy to: $CopyToFolder")
-                    } else {
-                        Write-Host "  Warning: Folder '$CopyToFolder' not found. Skipping copy action." -ForegroundColor Yellow
-                        Write-Host "  Available folders can be listed with outlook-folders.ps1" -ForegroundColor Gray
-                    }
-                }
-
-                if ($ForwardTo) {
-                    $rule.Actions.Forward.Enabled = $true
-                    $rule.Actions.Forward.Recipients.Add($ForwardTo) | Out-Null
-                    if (-not $rule.Actions.Forward.Recipients.ResolveAll()) {
-                        Write-Host "  Warning: '$ForwardTo' could not be resolved in address book." -ForegroundColor Yellow
-                    }
-                    [void]$actionsList.Add("Forward to: $ForwardTo")
-                }
-
-                if ($RedirectTo) {
-                    $rule.Actions.Redirect.Enabled = $true
-                    $rule.Actions.Redirect.Recipients.Add($RedirectTo) | Out-Null
-                    if (-not $rule.Actions.Redirect.Recipients.ResolveAll()) {
-                        Write-Host "  Warning: '$RedirectTo' could not be resolved in address book." -ForegroundColor Yellow
-                    }
-                    [void]$actionsList.Add("Redirect to: $RedirectTo")
-                }
-
-                if ($AssignCategory) {
-                    $rule.Actions.AssignToCategory.Enabled = $true
-                    $rule.Actions.AssignToCategory.Categories = @($AssignCategory)
-                    [void]$actionsList.Add("Assign category: $AssignCategory")
-                }
-
-                if ($Delete) {
-                    $rule.Actions.Delete.Enabled = $true
-                    [void]$actionsList.Add("Delete (move to Deleted Items)")
-                }
-
-                if ($DeletePermanently) {
-                    $rule.Actions.DeletePermanently.Enabled = $true
-                    [void]$actionsList.Add("Delete permanently")
-                }
-
-                if ($DesktopAlert) {
-                    $rule.Actions.DesktopAlert.Enabled = $true
-                    [void]$actionsList.Add("Show desktop alert")
-                }
-
-                if ($StopProcessing) {
-                    $rule.Actions.Stop.Enabled = $true
-                    [void]$actionsList.Add("Stop processing more rules")
-                }
-
-                # Check if any action was actually added (folder actions may have been skipped)
-                if ($actionsList.Count -eq 0) {
-                    Write-Host "`nNo actions could be applied (folder(s) not found)." -ForegroundColor Red
-                    Write-Host "Rule was not saved." -ForegroundColor Gray
-                } else {
-                    # Enable/disable the rule
-                    $rule.Enabled = -not $Disabled
-
-                    # Show preview before saving
-                    $status = if ($Disabled) { "Disabled" } else { "Enabled" }
-                    $statusColor = if ($Disabled) { "Gray" } else { "Green" }
-
-                    Write-Host "`n=== RULE PREVIEW ===" -ForegroundColor Cyan
-                    Write-Host "Name: $Name" -ForegroundColor Yellow
-                    Write-Host "Status: $status" -ForegroundColor $statusColor
-
-                    Write-Host "`nConditions:" -ForegroundColor Cyan
-                    foreach ($cond in $conditionsList) {
-                        $condDisplay = if ($StripLinks) { Strip-Links $cond } else { $cond }
-                        Write-Host "  - $condDisplay" -ForegroundColor Gray
-                    }
-
-                    Write-Host "`nActions:" -ForegroundColor Cyan
-                    foreach ($act in $actionsList) {
-                        $actDisplay = if ($StripLinks) { Strip-Links $act } else { $act }
-                        Write-Host "  - $actDisplay" -ForegroundColor Gray
-                    }
-
-                    # Save the rules with error handling
-                    try {
-                        $rules.Save($true)
-                        Write-Host "`n=== RULE CREATED ===" -ForegroundColor Green
-                        Write-Host "Rule saved successfully. It will apply to new incoming emails." -ForegroundColor Cyan
-                        Write-Host "Use outlook-rules-list.ps1 -Detailed to verify." -ForegroundColor Gray
-                    } catch {
-                        Write-Host "`nFailed to save rule: $($_.Exception.Message)" -ForegroundColor Red
-                        Write-Host "This may happen if you are offline or disconnected from Exchange." -ForegroundColor Gray
-                    }
-                }
-            }
+    function Add-Recipients($cond, [string]$list) {
+        $cond.Enabled = $true
+        foreach ($v in (Split-Values $list)) { [void]$cond.Recipients.Add($v) }
+        if (-not $cond.Recipients.ResolveAll()) {
+            $bad = @(foreach ($r in $cond.Recipients) { if (-not $r.Resolved) { $r.Name } })
+            throw "Could not resolve: $($bad -join '; '). Nothing was saved."
         }
     }
+    function Set-Text($cond, [string]$list) { $cond.Enabled = $true; $cond.Text = Split-Values $list }
+    $imp = @{ "Low" = 0; "Normal" = 1; "High" = 2 }
+
+    if ($FromAddress) { Add-Recipients $c.From $FromAddress }
+    if ($SentTo) { Add-Recipients $c.SentTo $SentTo }
+    if ($SubjectContains) { Set-Text $c.Subject $SubjectContains }
+    if ($BodyContains) { Set-Text $c.Body $BodyContains }
+    if ($BodyOrSubjectContains) { Set-Text $c.BodyOrSubject $BodyOrSubjectContains }
+    if ($HeaderContains) { Set-Text $c.MessageHeader $HeaderContains }
+    if ($SenderAddressContains) { Set-Text $c.SenderAddress $SenderAddressContains }
+    if ($RecipientAddressContains) { Set-Text $c.RecipientAddress $RecipientAddressContains }
+    if ($HasAttachment) { $c.HasAttachment.Enabled = $true }
+    if ($Importance) { $c.Importance.Enabled = $true; $c.Importance.Importance = $imp[$Importance] }
+    if ($Category) { $c.Category.Enabled = $true; $c.Category.Categories = Split-Values $Category }
+    if ($OnlyToMe) { $c.OnlyToMe.Enabled = $true }
+    if ($ToMe) { $c.ToMe.Enabled = $true }
+    if ($CcMe) { $c.CC.Enabled = $true }
+    if ($ToOrCcMe) { $c.ToOrCc.Enabled = $true }
+    if ($NotToMe) { $c.NotTo.Enabled = $true }
+    if ($MeetingInviteOrUpdate) { $c.MeetingInviteOrUpdate.Enabled = $true }
+    if ($Account) {
+        $acct = $null; foreach ($ac in $Namespace.Accounts) { if ($ac.SmtpAddress -ieq $Account -or $ac.DisplayName -ieq $Account) { $acct = $ac } }
+        if (-not $acct) { throw "Account '$Account' not found (outlook-accounts-list.ps1)." }
+        $c.Account.Enabled = $true; $c.Account.Account = $acct
+    }
+
+    if ($ExceptFrom) { Add-Recipients $x.From $ExceptFrom }
+    if ($ExceptSubjectContains) { Set-Text $x.Subject $ExceptSubjectContains }
+    if ($ExceptBodyContains) { Set-Text $x.Body $ExceptBodyContains }
+    if ($ExceptSenderAddressContains) { Set-Text $x.SenderAddress $ExceptSenderAddressContains }
+    if ($ExceptHasAttachment) { $x.HasAttachment.Enabled = $true }
+    if ($ExceptOnlyToMe) { $x.OnlyToMe.Enabled = $true }
+    if ($ExceptImportance) { $x.Importance.Enabled = $true; $x.Importance.Importance = $imp[$ExceptImportance] }
+    if ($ExceptCategory) { $x.Category.Enabled = $true; $x.Category.Categories = Split-Values $ExceptCategory }
+    if ($ExceptMeetingInviteOrUpdate) { $x.MeetingInviteOrUpdate.Enabled = $true }
+
+    if ($moveFolder) { $a.MoveToFolder.Enabled = $true; $a.MoveToFolder.Folder = $moveFolder }
+    if ($copyFolder) { $a.CopyToFolder.Enabled = $true; $a.CopyToFolder.Folder = $copyFolder }
+    if ($ForwardTo) { Add-Recipients $a.Forward $ForwardTo }
+    if ($ForwardAsAttachmentTo) { Add-Recipients $a.ForwardAsAttachment $ForwardAsAttachmentTo }
+    if ($RedirectTo) { Add-Recipients $a.Redirect $RedirectTo }
+    if ($AssignCategory) { $a.AssignToCategory.Enabled = $true; $a.AssignToCategory.Categories = Split-Values $AssignCategory }
+    if ($ClearCategories) { $a.ClearCategories.Enabled = $true }
+    if ($Delete) { $a.Delete.Enabled = $true }
+    if ($DeletePermanently) { $a.DeletePermanently.Enabled = $true }
+    if ($MarkAsTask) {
+        $a.MarkAsTask.Enabled = $true
+        $a.MarkAsTask.MarkInterval = @{ "Today" = 0; "Tomorrow" = 1; "ThisWeek" = 2; "NextWeek" = 3; "NoDate" = 4 }[$MarkAsTask]
+        $a.MarkAsTask.FlagTo = $FlagText
+    }
+    if ($NewItemAlert) { $a.NewItemAlert.Enabled = $true; $a.NewItemAlert.Text = $NewItemAlert }
+    if ($DesktopAlert) { $a.DesktopAlert.Enabled = $true }
+    if ($PlaySound) {
+        if (-not (Test-Path -LiteralPath $PlaySound)) { throw "Sound file not found: $PlaySound" }
+        $a.PlaySound.Enabled = $true; $a.PlaySound.FilePath = (Resolve-Path -LiteralPath $PlaySound).Path
+    }
+    if ($StopProcessing) { $a.Stop.Enabled = $true }
+    if ($CcTo) { Add-Recipients $a.CC $CcTo }
+    if ($NotifyRead) { $a.NotifyRead.Enabled = $true }
+    if ($NotifyDelivery) { $a.NotifyDelivery.Enabled = $true }
+
+    $rule.Enabled = -not $Disabled
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try { $rules.Save($false) }
+    catch {
+        if ($_.Exception.Message -match "invalid actions or conditions") {
+            Stop-WithError "Outlook refused to save the rule: one of its conditions or actions is not allowed in this mailbox. Nothing was saved." "Common causes: moving/copying into a folder inside Deleted Items, a folder in another mailbox, or an action this account type does not support. Try fewer options to find which one."
+        }
+        throw
+    }
+    $saveMs = $sw.ElapsedMilliseconds
+
+    $ran = ""
+    if ($RunNow) {
+        $target = Resolve-OutlookFolder -Namespace $Namespace -Path $RunFolder
+        $rule.Execute($false, $target, $false, 0)
+        $ran = $target.FolderPath
+    }
+
+    $saved = ConvertTo-RuleRecord (Find-Rule -Rules (Get-StoreRules $store) -Name $Name)
+    if ($Json) { Write-Json ([ordered]@{ Result = $(if ($existing) { "replaced" } else { "created" }); Mailbox = $store.DisplayName; Rule = $saved; SaveMs = $saveMs; RanOn = $ran }); exit 0 }
+    Write-Host "=== RULE $(if ($existing) { 'REPLACED' } else { 'CREATED' }) ===" -ForegroundColor Green
+    Write-Host "  Mailbox: $($store.DisplayName)   (saved in $saveMs ms)"
+    Write-RuleRecord $saved -Detailed
+    if ($ran) { Write-Host "  Ran now on: $ran" -ForegroundColor Cyan }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "`nNote: Some rule features may require Exchange or Office 365." -ForegroundColor Gray
-}
-finally {
-    if ($rule) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($rule) | Out-Null } catch {}
-    }
-    if ($rules) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($rules) | Out-Null } catch {}
-    }
-    if ($Namespace) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Namespace) | Out-Null } catch {}
-    }
-    if ($Outlook) {
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Outlook) | Out-Null
-    }
-    [System.GC]::Collect()
-    [System.GC]::WaitForPendingFinalizers()
+    Stop-WithError $_
 }

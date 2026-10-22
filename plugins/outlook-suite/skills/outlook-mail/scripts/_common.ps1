@@ -56,8 +56,10 @@ function Test-InOutlookHost { return [bool]($global:OutlookSuite -and $global:Ou
 # Print "Error: ..." and exit 1. Accepts a string or an ErrorRecord.
 function Stop-WithError {
     param($Message, [string]$Hint = "")
-    if ($Message -is [System.Management.Automation.ErrorRecord]) { $Message = $Message.Exception.Message }
+    $trace = ""
+    if ($Message -is [System.Management.Automation.ErrorRecord]) { $trace = $Message.ScriptStackTrace; $Message = $Message.Exception.Message }
     Write-Host "Error: $Message" -ForegroundColor Red
+    if ($env:OUTLOOK_SUITE_DEBUG -eq "1" -and $trace) { Write-Host $trace -ForegroundColor DarkGray }
     if ($Hint) { Write-Host "Hint: $Hint" -ForegroundColor Gray }
     exit 1
 }
@@ -712,6 +714,111 @@ function Format-Preview {
     $t = (Format-MailLinks -Text $t -Mode domain).Text
     if ($t.Length -gt $Length) { $t = $t.Substring(0, $Length) + "..." }
     return $t
+}
+
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
+
+$script:RuleConditionNames = @{
+    0 = "Unknown"; 1 = "From"; 2 = "Subject contains"; 3 = "Account"; 4 = "Sent only to me"; 5 = "My name in To"
+    6 = "Importance"; 7 = "Sensitivity"; 8 = "Flagged for action"; 9 = "My name in Cc"; 10 = "My name in To or Cc"
+    11 = "My name not in To"; 12 = "Sent to"; 13 = "Body contains"; 14 = "Body or subject contains"
+    15 = "Header contains"; 16 = "Recipient address contains"; 17 = "Sender address contains"; 18 = "Category"
+    19 = "Out-of-office message"; 20 = "Has attachment"; 21 = "Size range"; 22 = "Date range"; 23 = "Form name"
+    24 = "Document property"; 25 = "Sender in address book"; 26 = "Meeting invite or update"; 27 = "On this computer only"
+    28 = "On another computer"; 29 = "Any category"; 30 = "From RSS feed"; 31 = "From any RSS feed"
+}
+$script:RuleActionNames = @{
+    0 = "Unknown"; 1 = "Move to folder"; 2 = "Assign category"; 3 = "Delete"; 4 = "Delete permanently"; 5 = "Copy to folder"
+    6 = "Forward"; 7 = "Forward as attachment"; 8 = "Redirect"; 9 = "Server reply"; 10 = "Reply with template"
+    11 = "Flag for action in days"; 12 = "Flag color"; 13 = "Clear flag"; 14 = "Set importance"; 15 = "Set sensitivity"
+    16 = "Print"; 17 = "Play sound"; 18 = "Start application"; 19 = "Mark read"; 20 = "Run script"; 21 = "Stop processing more rules"
+    22 = "Custom action"; 23 = "New item alert"; 24 = "Desktop alert"; 25 = "Request read receipt"; 26 = "Request delivery receipt"
+    27 = "Cc the message"; 28 = "Defer delivery"; 30 = "Clear categories"; 41 = "Mark as task"
+}
+
+# The store whose rules to use: -Mailbox (display name or SMTP) or the default mailbox.
+function Get-RuleStore {
+    param($Namespace, [string]$Mailbox = "")
+    if (-not $Mailbox) { return $Namespace.DefaultStore }
+    foreach ($s in $Namespace.Stores) { if ($s.DisplayName -ieq $Mailbox) { return $s } }
+    throw "Mailbox '$Mailbox' not found. Mailboxes: $(@(foreach ($s in $Namespace.Stores) { $s.DisplayName }) -join '; ')"
+}
+
+function Get-StoreRules {
+    param($Store)
+    # The unary comma returns the Rules collection itself; without it PowerShell would unroll it
+    # (an empty collection would come back as $null, and Create/Save would be lost).
+    try { return , $Store.GetRules() }
+    catch {
+        $m = $_.Exception.Message
+        if ($m -match "conflict") {
+            throw "Outlook reports that rules in mailbox '$($Store.DisplayName)' are in conflict (the copy in Outlook and the copy on the server differ), so no rule can be read or changed by script until that is resolved once in Outlook: File > Manage Rules & Alerts, then choose which copy to keep."
+        }
+        if ($m -match "does not support rules|could not be found") { throw "Mailbox '$($Store.DisplayName)' does not support rules." }
+        throw
+    }
+}
+
+function Get-RuleDetail($obj, [int]$type, [bool]$isAction) {
+    $d = @()
+    try { if ($obj.Text) { $d += "'" + (@($obj.Text) -join "' or '") + "'" } } catch { }
+    try { if ($obj.Recipients -and $obj.Recipients.Count) { $d += (@(foreach ($r in $obj.Recipients) { if ($r.Address -and $r.Address -notmatch '^/O=') { $r.Address } else { $r.Name } }) -join "; ") } } catch { }
+    try { if ($obj.Categories) { $d += (@($obj.Categories) -join ", ") } } catch { }
+    try { if ($isAction -and $obj.Folder) { $d += $obj.Folder.FolderPath } } catch { }
+    try { if ($type -eq 6 -and -not $isAction) { $d += $script:ImportanceNames[[int]$obj.Importance] } } catch { }
+    try { if ($type -eq 3 -and -not $isAction -and $obj.Account) { $d += $obj.Account.DisplayName } } catch { }
+    try { if ($type -eq 25 -and $obj.AddressList) { $d += $obj.AddressList.Name } } catch { }
+    try { if ($type -eq 23 -and $obj.FormName) { $d += (@($obj.FormName) -join ", ") } } catch { }
+    try { if ($type -eq 17 -and $isAction -and $obj.FilePath) { $d += $obj.FilePath } } catch { }
+    return ($d -join " | ")
+}
+
+# A rule as an ordered record: name, on/off, order, type, conditions, exceptions, actions.
+function ConvertTo-RuleRecord {
+    param($Rule)
+    $conds = @(); $excs = @(); $acts = @()
+    for ($i = 1; $i -le $Rule.Conditions.Count; $i++) {
+        $c = $Rule.Conditions.Item($i)
+        if ($c.Enabled) { $t = [int]$c.ConditionType; $conds += [ordered]@{ Type = $script:RuleConditionNames[$t]; Value = (Get-RuleDetail $c $t $false) } }
+    }
+    for ($i = 1; $i -le $Rule.Exceptions.Count; $i++) {
+        $c = $Rule.Exceptions.Item($i)
+        if ($c.Enabled) { $t = [int]$c.ConditionType; $excs += [ordered]@{ Type = $script:RuleConditionNames[$t]; Value = (Get-RuleDetail $c $t $false) } }
+    }
+    for ($i = 1; $i -le $Rule.Actions.Count; $i++) {
+        $a = $Rule.Actions.Item($i)
+        if ($a.Enabled) { $t = [int]$a.ActionType; $acts += [ordered]@{ Type = $script:RuleActionNames[$t]; Value = (Get-RuleDetail $a $t $true) } }
+    }
+    return [ordered]@{
+        Order = [int]$Rule.ExecutionOrder; Name = $Rule.Name; Enabled = [bool]$Rule.Enabled
+        Kind = $(if ([int]$Rule.RuleType -eq 1) { "send" } else { "receive" }); ClientOnly = [bool]$Rule.IsLocalRule
+        Conditions = $conds; Exceptions = $excs; Actions = $acts
+    }
+}
+
+function Write-RuleRecord {
+    param($R, [switch]$Detailed)
+    $state = if ($R.Enabled) { "ON " } else { "OFF" }
+    $extra = @(); if ($R.Kind -eq "send") { $extra += "send rule" }; if ($R.ClientOnly) { $extra += "client-only" }
+    Write-Host ("{0,3}. [{1}] {2}{3}" -f $R.Order, $state, $R.Name, $(if ($extra) { "  ($($extra -join ', '))" })) -ForegroundColor $(if ($R.Enabled) { "Yellow" } else { "Gray" })
+    if ($Detailed) {
+        foreach ($c in $R.Conditions) { Write-Host "       if:     $($c.Type)$(if ($c.Value) { ": $($c.Value)" })" }
+        foreach ($c in $R.Exceptions) { Write-Host "       except: $($c.Type)$(if ($c.Value) { ": $($c.Value)" })" }
+        foreach ($a in $R.Actions) { Write-Host "       then:   $($a.Type)$(if ($a.Value) { ": $($a.Value)" })" -ForegroundColor Cyan }
+    }
+}
+
+# Find one rule by exact name (case-insensitive) or execution order number.
+function Find-Rule {
+    param($Rules, [string]$Name = "", [int]$Order = 0)
+    for ($i = 1; $i -le $Rules.Count; $i++) {
+        $r = $Rules.Item($i)
+        if (($Name -and $r.Name -ieq $Name) -or ($Order -gt 0 -and [int]$r.ExecutionOrder -eq $Order)) { return $r }
+    }
+    $what = if ($Name) { "named '$Name'" } else { "at position $Order" }
+    throw "No rule $what. List rules with outlook-rules-list.ps1."
 }
 
 # ---------------------------------------------------------------------------
