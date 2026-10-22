@@ -1,15 +1,15 @@
 ---
 name: outlook-mail
-description: "Manage classic Outlook email on Windows through PowerShell COM: find, read, full threads, reply/forward in thread with HTML, draft, send, move, bulk actions, folders, rules, categories, flags, attachments, headers, junk, signatures, reminders, out-of-office. Use for any Outlook mail task on the local Windows PC. Fast (one Table query per search), agent-friendly (EntryIDs everywhere, -Json, exit codes), with a confirm switch on every irreversible action."
+description: "Manage classic Outlook email on Windows through PowerShell COM: triage (untagged, by tag, not replied, Copilot priority), find, read, full threads, reply/forward in thread with HTML, draft, send, move, bulk actions, folders, rules, categories, flags, attachments, headers, junk, signatures, reminders, out-of-office. Use for any Outlook mail task on the local Windows PC. Fast (one Table query per search), agent-friendly (EntryIDs everywhere, -Json, exit codes), with a confirm switch on every irreversible action."
 ---
 
 # Outlook Mail
 
-51 PowerShell scripts in `scripts/` that drive classic Outlook (running on this Windows PC) through COM. Every script works standalone (`pwsh -File scripts/<name>.ps1 ...`); a warm host makes repeated calls about twice as fast.
+52 PowerShell scripts in `scripts/` that drive classic Outlook (running on this Windows PC) through COM. Every script works standalone (`pwsh -File scripts/<name>.ps1 ...`); a warm host makes repeated calls about twice as fast.
 
 ## How to work
 
-1. **Find first, then act by EntryID.** `outlook-find.ps1` (or `outlook-read`, `outlook-search`, `outlook-search-advanced`, `outlook-selection`) prints an `EntryID` for every email. Pass it to any action script with `-EntryID`. `-Index` still exists but positions shift as mail arrives; do not use it for actions.
+1. **Find first, then act by EntryID.** `outlook-triage.ps1` (what needs attention), `outlook-find.ps1` (or `outlook-read`, `outlook-search`, `outlook-search-advanced`, `outlook-selection`) prints an `EntryID` for every email. Pass it to any action script with `-EntryID`. `-Index` still exists but positions shift as mail arrives; do not use it for actions.
 2. **EntryIDs can change when an email moves.** Scripts that move or copy print the new EntryID (and the old one). Use the new one afterwards.
 3. **Folders are names or paths:** `Inbox`, `Sent`, `Drafts`, `Deleted`, `Junk`, `Outbox`, `Inbox/Projects/2026`, or another mailbox: `someone@x.edu/Inbox`. `outlook-folders.ps1` lists the paths. An unknown folder is an error (exit 1), never a silent fallback to Inbox.
 4. **Read the output contract:** success exits 0; any failure prints `Error: <reason>` (often a `Hint:` line) and exits 1. A gated action without confirmation prints `PREVIEW ONLY: ... was NOT done.` and exits 0.
@@ -19,6 +19,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: fi
 
 | Need | Script | Key parameters |
 |---|---|---|
+| What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -Json` (see Triage) |
 | List / filter emails | `outlook-find.ps1` | `-Folder -Days -DateFrom -DateTo -From -To -Subject -BodyContains [-FastBody] -UnreadOnly -ReadOnly -HasAttachment -Flagged -Importance -Category -Limit -Detailed -Json` |
 | Latest emails | `outlook-read.ps1` | `-Days 1 -Limit 20 -UnreadOnly -Folder` |
 | Quick text search | `outlook-search.ps1` | `-Subject -From -Body [-FastBody] -Days -Folder` |
@@ -56,6 +57,29 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: fi
 | Accounts, mailboxes, sizes | `outlook-accounts-list.ps1`, `outlook-stores.ps1` (`-TopFolders 15`) | |
 | Save / print / import | `outlook-save-as.ps1` (`-Format msgunicode|msg|txt|html|mht|rtf|doc|template`), `outlook-print.ps1 -Confirm`, `outlook-import-msg.ps1 -Path` | |
 | Recall | `outlook-recall.ps1` | `-EntryID -OpenRecallDialog` (opens Outlook's recall dialog) or `-DeleteUnread -Confirm` (Sent copy only) |
+
+## Triage
+
+`outlook-triage.ps1` lists facts for deciding what to do with mail. It applies no content rules and calls no AI; the agent reading the list decides. Three views, each a set of defaults:
+
+| View | Defaults | Answers |
+|---|---|---|
+| `untagged` (default) | Inbox, last 3 days, unread, no category | what nobody has sorted yet |
+| `tagged` | Inbox, last 3 days, read and unread, any category, grouped by tag set | where everything stands |
+| `reply` | Inbox, last 7 days, not replied (any tag or none), oldest first, "waiting Nd" | what the user has not answered |
+
+Every filter works with every view and overrides its default: `-Days N` (`-Days 0` = no date limit), `-DateFrom/-DateTo`, `-All` (no date limit and read + unread; an explicit `-Days` still wins), `-Unread`/`-Read`, `-Category "@Action,@Review"` (any of them) or `-Untagged`, `-NotReplied`/`-Replied`, `-Priority High,Normal,Low`, `-From`, `-Subject`, `-Folder`, `-Sort Newest|Oldest|Priority`, `-Limit`, `-Json`.
+
+Each row: date, exact subject, sender, tags, unread, replied / replied all / forwarded, Copilot priority, whether the user is in To or only CC and the recipient count, flag and due date, preview, EntryID. The last line counts matches, unread, untagged, not replied, Copilot high and flagged.
+
+- **Replied** is Outlook's own record of the last action on the email (reply, reply all, forward). Forwarded is not replied.
+- **Copilot priority** is the High / Low arrow Copilot shows in Outlook ("Marked as high priority by Copilot"), read from the message property `CopilotInboxScore` (5 high, 3 normal, 1 low). It is empty on mail Copilot did not score.
+
+```powershell
+& scripts/outlook-call.ps1 triage                                   # unread, untagged, last 3 days
+& scripts/outlook-call.ps1 triage tagged -Category "@Action,@Review" -Unread
+& scripts/outlook-call.ps1 triage reply -Priority High -Days 10 -Json
+```
 
 ## Output
 
@@ -119,8 +143,9 @@ Switching confirmation off (the user's choice):
 - Out-of-office text/schedule, and reading the junk lists, need the Exchange Online module (`Install-Module ExchangeOnlineManagement -Scope CurrentUser; Connect-ExchangeOnline`); on/off and block/safe sender work without it.
 - With Microsoft 365 roaming signatures, Outlook may keep the cloud default instead of `-Action SetDefault`.
 - Reminders are asynchronous: Outlook registers and pops them up on its own schedule.
+- If Outlook is closed or crashes, the next call reconnects (the warm host notices too). Scripts start Outlook with its window, never hidden: after a crash Outlook may want to show a recovery prompt, and a hidden Outlook would wait on it forever. If Outlook does not come up within 90 s the call fails with `Error:`; open Outlook once by hand.
 - Debugging a script: `$env:OUTLOOK_SUITE_DEBUG = "1"` adds the script stack trace to `Error:` lines.
 
 ## Tests
 
-`tests/` (run against the live profile; they print counts and PASS/FAIL only, write only to test items and a hidden `Deleted Items/_suite-test` folder, and send nothing): `Test-MailParity.ps1` (same results as a baseline copy), `Invoke-MailBench.ps1`, `Test-MailWrites.ps1`, `Test-MailCompose.ps1`, `Test-MailFolders.ps1`, `Test-MailRules.ps1 -Mailbox <test mailbox>`, `Test-MailExtras.ps1`, `Test-MailHost.ps1`, `Test-MailPS51.ps1` (same results under Windows PowerShell 5.1 and PowerShell 7).
+`tests/` (run against the live profile; they print counts and PASS/FAIL only, write only to test items and a hidden `Deleted Items/_suite-test` folder, and send nothing): `Test-MailParity.ps1` (same results as a baseline copy), `Invoke-MailBench.ps1`, `Test-MailWrites.ps1`, `Test-MailCompose.ps1`, `Test-MailFolders.ps1`, `Test-MailRules.ps1 -Mailbox <test mailbox>`, `Test-MailExtras.ps1`, `Test-MailHost.ps1`, `Test-MailPS51.ps1` (same results under Windows PowerShell 5.1 and PowerShell 7), `Test-MailTriage.ps1` (triage views against independent item-by-item counts).

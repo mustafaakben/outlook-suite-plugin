@@ -88,6 +88,11 @@ You can also run scripts directly from the packaged plugin paths:
 ```powershell
 cd plugins/outlook-suite/skills/outlook-mail
 
+# What needs attention: unread untagged mail (default), mail by tag, or mail not replied to,
+# each with Copilot's priority; every filter is a parameter
+& ".\scripts\outlook-triage.ps1"
+& ".\scripts\outlook-triage.ps1" reply -Category "@Action,@Review" -Priority High -Days 10
+
 # Find candidate emails and capture EntryID
 & ".\scripts\outlook-find.ps1" -Days 2 -From "john@example.com"
 
