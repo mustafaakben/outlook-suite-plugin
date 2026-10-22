@@ -5,7 +5,7 @@ description: "Complete Microsoft Outlook automation via PowerShell COM objects o
 
 # Outlook Suite
 
-Automates Microsoft Outlook operations across email, calendar, contacts, tasks, and notes using PowerShell COM objects. 79 scripts organized into 5 focused modules.
+Automates Microsoft Outlook operations across email, calendar, contacts, tasks, and notes using PowerShell COM objects. 81 scripts organized into 5 focused modules.
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ This suite is organized into 5 self-contained modules. Each module has its own d
 
 ### Email — [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)
 
-The largest module (52 scripts). Handles all email operations:
+The largest module (54 scripts). Handles all email operations:
 
 - **Triage** — `outlook-triage.ps1`: unread untagged mail, mail by tag, mail not replied to, with Copilot's High/Low priority; every filter a parameter
 - **Find and target** — `outlook-find.ps1` for EntryID discovery with rich filtering; multi-folder and whole-mailbox search; the user's current selection
@@ -93,7 +93,7 @@ The largest module (52 scripts). Handles all email operations:
 
 ### Email — [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)
 
-All 52 mail scripts, with their key parameters, are in the **"Which script when"** table in [outlook-mail/SKILL.md](../outlook-mail/SKILL.md). Start with `outlook-triage.ps1` (what needs attention), `outlook-find.ps1` (EntryIDs), `outlook-read-body.ps1` / `outlook-conversation.ps1` (read), `outlook-reply.ps1` / `outlook-draft.ps1` (compose as draft), `outlook-send-draft.ps1 -Confirm` (send after approval).
+All 54 mail scripts, with their key parameters, are in the **"Which script when"** table in [outlook-mail/SKILL.md](../outlook-mail/SKILL.md). Start with `outlook-triage.ps1` (what needs attention), `outlook-priority.ps1` (mail ranked by Copilot priority), `outlook-smart-reply.ps1` (Copilot's suggested replies), `outlook-find.ps1` (EntryIDs), `outlook-read-body.ps1` / `outlook-conversation.ps1` (read), `outlook-reply.ps1` / `outlook-draft.ps1` (compose as draft), `outlook-send-draft.ps1 -Confirm` (send after approval).
 
 ### Calendar — [outlook-calendar/SKILL.md](../outlook-calendar/SKILL.md)
 
