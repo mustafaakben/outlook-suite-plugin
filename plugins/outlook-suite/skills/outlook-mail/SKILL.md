@@ -1,6 +1,6 @@
 ---
 name: outlook-mail
-description: "Manage classic Outlook email on Windows through PowerShell COM: triage (untagged, by tag, not replied, Copilot priority), find, read, full threads, reply/forward in thread with HTML, draft, send, move, bulk actions, folders, rules, categories, flags, attachments, headers, junk, signatures, reminders, out-of-office. Use for any Outlook mail task on the local Windows PC. Fast (one Table query per search), agent-friendly (EntryIDs everywhere, -Json, exit codes), with a confirm switch on every irreversible action."
+description: "Manage classic Outlook email on Windows through PowerShell COM: triage (untagged, by tag, not replied, Copilot priority), Copilot insights (priority ranking, headline, reason, suggested replies as drafts), find, read, full threads, reply/forward in thread with HTML, draft, send, move, bulk actions, folders, rules, categories, flags, attachments, headers, junk, signatures, reminders, out-of-office. Use for any Outlook mail task on the local Windows PC. Fast (one Table query per search), agent-friendly (EntryIDs everywhere, -Json, exit codes), with a confirm switch on every irreversible action."
 ---
 
 # Outlook Mail
@@ -20,8 +20,10 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 | Need | Script | Key parameters |
 |---|---|---|
 | What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -Json` (see Triage) |
-| List / filter emails | `outlook-find.ps1` | `-Folder -Days -DateFrom -DateTo -From -To -Subject -BodyContains [-FastBody] -UnreadOnly -ReadOnly -HasAttachment -Flagged -Importance -Category -Limit -Detailed -Json` |
-| Latest emails | `outlook-read.ps1` | `-Days 1 -Limit 20 -UnreadOnly -Folder` |
+| Mail ranked by Copilot priority | `outlook-priority.ps1` | `-Days 1 -DateFrom -DateTo -All -Unread -Read -Category -Untagged -Priority High,Normal,Low,None -From -Subject -Folder -Limit [-Why] [-Summary] -Json` (see Copilot insights) |
+| Copilot's suggested replies | `outlook-smart-reply.ps1` | `-EntryID [-Use 1-3 [-ReplyAll] [-RemoveAutoSignature]]`; list: `-Days 2 -DateFrom -DateTo -UnreadOnly -From -Subject -Folder -Limit -MaxScan -Json` |
+| List / filter emails | `outlook-find.ps1` | `-Folder -Days -DateFrom -DateTo -From -To -Subject -BodyContains [-FastBody] -UnreadOnly -ReadOnly -HasAttachment -Flagged -Importance -Category -Priority High,Normal,Low -Limit -Detailed -Json` |
+| Latest emails | `outlook-read.ps1` | `-Days 1 -Limit 20 -UnreadOnly -Folder -Priority High,Normal,Low` |
 | Quick text search | `outlook-search.ps1` | `-Subject -From -Body [-FastBody] -Days -Folder` |
 | Search many folders / whole mailbox / all mailboxes | `outlook-search-advanced.ps1` | `-Folders "Inbox;Archive" -IncludeSubfolders -WholeMailbox -AllMailboxes` + find filters, `-SaveAs "name"` (Outlook Search Folder) |
 | What the user has selected in Outlook | `outlook-selection.ps1` | `-Body` |
@@ -36,7 +38,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 | Send new email | `outlook-send.ps1` / `outlook-send-as.ps1` (`-Account`) | same as draft + `-Confirm` |
 | Send later | `outlook-schedule-send.ps1` | `-SendAt "2026-11-02 09:00" -Confirm` |
 | Voting buttons / receipts | `outlook-voting.ps1` (`-Options "A;B"`), `outlook-request-receipt.ps1` | `-Confirm` |
-| Reply / reply all in thread | `outlook-reply.ps1` | `-EntryID -Body | -HTML/-HtmlFile [-ReplyAll] [-RemoveAutoSignature] [-DraftEntryID] [-Send -Confirm]` |
+| Reply / reply all in thread | `outlook-reply.ps1` | `-EntryID -Body | -HTML/-HtmlFile | -SmartReply 1-3 [-ReplyAll] [-RemoveAutoSignature] [-DraftEntryID] [-Send -Confirm]` |
 | Forward | `outlook-forward.ps1` | `-EntryID -To [-Body] [-DraftEntryID] [-Send -Confirm]` |
 | Move / copy one email | `outlook-move.ps1`, `outlook-copy.ps1` | `-EntryID -Folder` |
 | Delete | `outlook-delete.ps1` | `-EntryID [-Permanent] -Confirm` |
@@ -79,6 +81,30 @@ Each row: date, exact subject, sender, tags, unread, replied / replied all / for
 & scripts/outlook-call.ps1 triage                                   # unread, untagged, last 3 days
 & scripts/outlook-call.ps1 triage tagged -Category "@Action,@Review" -Unread
 & scripts/outlook-call.ps1 triage reply -Priority High -Days 10 -Json
+```
+
+Each row also shows Copilot's one-line headline when it wrote one. `-Copilot` adds Copilot's reason and suggested replies for the rows shown (one extra read per email).
+
+## Copilot insights
+
+Copilot stores its analysis on each email in Exchange. These scripts read it; they do not call Copilot or any AI. The fields are undocumented Microsoft properties (`PSETID_Common`, names in `$script:CopilotProp` in `_common.ps1`) and may change. Missing means Copilot did not analyze that email, never a guess.
+
+| Field | What it is | Coverage (typical) |
+|---|---|---|
+| Priority | High / Normal / Low, the arrow Copilot shows in Outlook (`CopilotInboxScore` 5 / 3 / 1) | almost every recent email |
+| Headline | Copilot's one-line summary of why the email matters | about 1 in 5 |
+| Reason | Copilot's explanation of the priority | emails with a headline |
+| Suggested replies | up to 3 short replies, in Copilot's rank order | about 1 in 4 |
+
+- `outlook-priority.ps1` ranks mail High > Normal > Low > not scored, newest first within each level (default: last 1 day). `-Why` adds the reason, `-Summary` prints counts only.
+- `outlook-smart-reply.ps1 -EntryID <id>` shows the suggestions. `-Use N` saves a reply draft in the thread with suggestion N as the text (same path as `outlook-reply.ps1 -SmartReply N`). It never sends; use `outlook-send-draft.ps1 -Confirm`.
+- `outlook-read-body.ps1` prints a "Copilot" block (priority, headline, reason, suggestions) and `-Json` carries it as `Copilot`.
+- `outlook-find.ps1` / `outlook-read.ps1` take `-Priority` and show `CopilotPriority` on each row.
+
+```powershell
+& scripts/outlook-call.ps1 priority -Days 1 -Unread               # today's unread, ranked
+& scripts/outlook-call.ps1 priority -Days 7 -Priority High -Why    # only High, with Copilot's reason
+& scripts/outlook-call.ps1 smart-reply -EntryID <id> -Use 2        # draft from suggestion 2
 ```
 
 ## Output
@@ -148,4 +174,4 @@ Switching confirmation off (the user's choice):
 
 ## Tests
 
-`tests/` (run against the live profile; they print counts and PASS/FAIL only, write only to test items and a hidden `Deleted Items/_suite-test` folder, and send nothing): `Test-MailParity.ps1` (same results as a baseline copy), `Invoke-MailBench.ps1`, `Test-MailWrites.ps1`, `Test-MailCompose.ps1`, `Test-MailFolders.ps1`, `Test-MailRules.ps1 -Mailbox <test mailbox>`, `Test-MailExtras.ps1`, `Test-MailHost.ps1`, `Test-MailPS51.ps1` (same results under Windows PowerShell 5.1 and PowerShell 7), `Test-MailTriage.ps1` (triage views against independent item-by-item counts).
+`tests/` (run against the live profile; they print counts and PASS/FAIL only, write only to test items and a hidden `Deleted Items/_suite-test` folder, and send nothing): `Test-MailParity.ps1` (same results as a baseline copy), `Invoke-MailBench.ps1`, `Test-MailWrites.ps1`, `Test-MailCompose.ps1`, `Test-MailFolders.ps1`, `Test-MailRules.ps1 -Mailbox <test mailbox>`, `Test-MailExtras.ps1`, `Test-MailHost.ps1`, `Test-MailPS51.ps1` (same results under Windows PowerShell 5.1 and PowerShell 7), `Test-MailTriage.ps1` (triage views against independent item-by-item counts), `Test-MailSmartReply.ps1` (suggested replies against independent reads; one test draft, deleted with `-Confirm`).

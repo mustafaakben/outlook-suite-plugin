@@ -6,6 +6,8 @@
     [string]$Body = "",
     [switch]$HTML,
     [string]$HtmlFile = "",
+    [ValidateRange(0, 3)]
+    [int]$SmartReply = 0,        # 1-3: use Copilot's suggested reply N as the text
     [switch]$ReplyAll,
     [switch]$RemoveAutoSignature,
     [string]$DraftEntryID = "",
@@ -31,7 +33,10 @@
 # -RemoveAutoSignature drops the signature Outlook inserts automatically into replies
 # (useful when your text already ends with your own signature).
 #
+# -SmartReply 1|2|3 uses Copilot's suggested reply (outlook-smart-reply.ps1 lists them) as the text.
+#
 # Usage: .\outlook-reply.ps1 -EntryID "00000000..." -Body "Thanks, see you Friday." -ReplyAll
+# Usage: .\outlook-reply.ps1 -EntryID "00000000..." -SmartReply 1
 # Usage: .\outlook-reply.ps1 -EntryID "00000000..." -HtmlFile .\reply.html -ReplyAll -RemoveAutoSignature
 # Usage: .\outlook-reply.ps1 -DraftEntryID "<draft>" -Body "New wording" -Confirm
 # Usage: .\outlook-reply.ps1 -DraftEntryID "<draft>" -Send -Confirm
@@ -50,6 +55,14 @@ try {
     } else {
         $target = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
         $original = "$($target.Subject) ($($target.EntryID))"
+        if ($SmartReply -gt 0) {
+            if ($Body -or $HtmlFile) { Stop-WithError "Use -SmartReply or -Body/-HtmlFile, not both." }
+            $suggestions = @((Get-CopilotInsight $target).SmartReplies)
+            if ($suggestions.Count -eq 0) { Stop-WithError "Copilot has no suggested replies for this email." -Hint "outlook-smart-reply.ps1 -Days 2 lists emails that have them." }
+            if ($SmartReply -gt $suggestions.Count) { Stop-WithError "Only $($suggestions.Count) suggested replies exist for this email; -SmartReply $SmartReply is out of range." }
+            $Body = $suggestions[$SmartReply - 1]
+            $HTML = $false
+        }
         $mail = if ($ReplyAll) { $target.ReplyAll() } else { $target.Reply() }
         $isNew = $true
         if (-not $Body -and -not $HtmlFile) { Stop-WithError "Give the reply text with -Body (or -HtmlFile)." }

@@ -92,6 +92,8 @@ cd plugins/outlook-suite/skills/outlook-mail
 # each with Copilot's priority; every filter is a parameter
 & ".\scripts\outlook-triage.ps1"
 & ".\scripts\outlook-triage.ps1" reply -Category "@Action,@Review" -Priority High -Days 10
+& ".\scripts\outlook-priority.ps1" -Days 1 -Unread -Why
+& ".\scripts\outlook-smart-reply.ps1" -EntryID "00000000..." -Use 1
 
 # Find candidate emails and capture EntryID
 & ".\scripts\outlook-find.ps1" -Days 2 -From "john@example.com"

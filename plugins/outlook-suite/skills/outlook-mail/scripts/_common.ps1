@@ -441,7 +441,9 @@ function ConvertTo-JsonRecord {
     param($Record)
     $o = [ordered]@{}
     foreach ($k in $Record.Keys) {
-        $o[$k] = if ($k -eq "Date") { Format-MailDateIso $Record[$k] } else { $Record[$k] }
+        # Plain assignment: an if-expression would unroll empty arrays to {} under Windows PowerShell 5.1
+        $o[$k] = $Record[$k]
+        if ($k -eq "Date") { $o[$k] = Format-MailDateIso $Record[$k] }
     }
     return $o
 }
@@ -638,6 +640,7 @@ function Write-MailList {
         if ($r.Importance -and $r.Importance -ne "Normal") { Write-Host "  Importance: $($r.Importance)" -ForegroundColor Magenta }
         if ($r.Flag) { Write-Host "  Flag: $($r.Flag)" -ForegroundColor Red }
         if ($r.Categories) { Write-Host "  Categories: $($r.Categories)" -ForegroundColor Green }
+        if ($r.Contains("CopilotPriority") -and $r.CopilotPriority) { Write-Host "  Copilot priority: $($r.CopilotPriority)" -ForegroundColor Magenta }
         if ($r.Contains("Attachments") -and $r.Attachments) { Write-Host "  Attachments ($($r.Attachments.Count)): $($r.Attachments -join ', ')" }
         elseif ($r.HasAttachments) { Write-Host "  Attachments: yes (names: outlook-attachment-save.ps1 -EntryID <id> -ListOnly)" }
         if ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
@@ -670,6 +673,61 @@ function Resolve-DateRange {
     if ($DateFrom) { return @([datetime]$DateFrom, $null) }
     if ($DateTo) { $t = ([datetime]$DateTo).Date.AddDays(1).AddMinutes(-1); return @($t.AddDays(-$Days), $t) }
     return @((Get-Date).AddDays(-$Days), $null)
+}
+
+# ---------------------------------------------------------------------------
+# Copilot insights stored on each message by Exchange (undocumented; names in one place)
+# ---------------------------------------------------------------------------
+
+# Score and Headline work as Folder.GetTable columns. Reason and SmartReply must be read
+# per item (PropertyAccessor); the "/" in the smart-reply name is written as %2F.
+$script:CopilotProp = @{
+    Score      = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/CopilotInboxScore"
+    Headline   = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/CopilotInboxHeadline"
+    Reason     = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/CopilotInboxScoreReason"
+    SmartReply = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/EntityExtraction%2FSmartReplyForEmail"
+}
+# Copilot's inbox arrow: 5 high (up), 3 normal (none), 1 low (down). Anything else is "".
+$script:CopilotPriorityNames = @{ 5 = "High"; 3 = "Normal"; 1 = "Low" }
+
+function ConvertTo-CopilotPriority($Score) {
+    if ($null -eq $Score -or "$Score" -eq "") { return "" }
+    $n = [int]$Score
+    if ($script:CopilotPriorityNames.ContainsKey($n)) { return $script:CopilotPriorityNames[$n] }
+    return ""
+}
+
+# Everything Copilot stored on one item. Missing properties give empty values, never errors.
+#   Priority (High/Normal/Low/""), Score, Headline, Reason, OriginalScore, SmartReplies (rank order)
+function Get-CopilotInsight {
+    param($Item)
+    $pa = $Item.PropertyAccessor
+    $get = { param($name) try { return $pa.GetProperty($name) } catch { return $null } }
+    $score = & $get $script:CopilotProp.Score
+    $info = [ordered]@{
+        Priority      = (ConvertTo-CopilotPriority $score)
+        Score         = $(if ($null -ne $score) { [int]$score } else { $null })
+        Headline      = [string](& $get $script:CopilotProp.Headline)
+        Reason        = ""
+        OriginalScore = $null
+        SmartReplies  = @()
+    }
+    $reasonJson = & $get $script:CopilotProp.Reason
+    if ($reasonJson) {
+        try {
+            $r = $reasonJson | ConvertFrom-Json
+            $info.Reason = [string]$r.Reason
+            if ($null -ne $r.OriginalScore) { $info.OriginalScore = [int]$r.OriginalScore }
+        } catch { $info.Reason = "" }
+    }
+    $replyJson = & $get $script:CopilotProp.SmartReply
+    if ($replyJson) {
+        try {
+            $entities = @(($replyJson | ConvertFrom-Json) | ForEach-Object { $_.entities } | Where-Object { $_.value })
+            $info.SmartReplies = @($entities | Sort-Object { [double]$_.confidence } | ForEach-Object { [string]$_.value })
+        } catch { $info.SmartReplies = @() }
+    }
+    return $info
 }
 
 # ---------------------------------------------------------------------------
