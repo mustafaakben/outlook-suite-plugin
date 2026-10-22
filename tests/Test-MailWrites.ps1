@@ -3,14 +3,13 @@
   Live write test for the mail action scripts, on a disposable test draft only.
 
 .DESCRIPTION
-  Creates the folder Inbox/_suite-test and a test draft (subject "[suite-test] ..."),
+  Uses the folder "Deleted Items/_suite-test" (created once, kept; out of sight) and a test draft (subject "[suite-test] ..."),
   runs each action script against that draft, checks the real Outlook state after each
   step, and prints PASS/FAIL lines only. Nothing is ever sent, printed or recalled:
   outward-facing scripts are run in preview mode. Cleans up at the end.
 #>
 param(
-    [string]$ScriptsDir = (Join-Path $PSScriptRoot "../plugins/outlook-suite/skills/outlook-mail/scripts"),
-    [switch]$KeepSandbox
+    [string]$ScriptsDir = (Join-Path $PSScriptRoot "../plugins/outlook-suite/skills/outlook-mail/scripts")
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,10 +29,12 @@ function Run([string]$script, [object[]]$a) {
 function Item($id) { return $Namespace.GetItemFromID($id) }
 
 # Sandbox
-$inbox = $Namespace.GetDefaultFolder(6)
+# Sandbox lives in Deleted Items and is kept: Exchange does not let scripts delete folders there,
+# so creating and deleting one per run would pile them up.
+$deletedRoot = $Namespace.GetDefaultFolder(3)
 $sandbox = $null
-foreach ($f in $inbox.Folders) { if ($f.Name -eq "_suite-test") { $sandbox = $f } }
-if (-not $sandbox) { $sandbox = $inbox.Folders.Add("_suite-test") }
+foreach ($f in $deletedRoot.Folders) { if ($f.Name -eq "_suite-test") { $sandbox = $f } }
+if (-not $sandbox) { $sandbox = $deletedRoot.Folders.Add("_suite-test") }
 $draft = $Outlook.CreateItem(0)
 $draft.Subject = "[suite-test] write test $(Get-Date -Format s)"
 $draft.Body = "Test draft created by Test-MailWrites.ps1. Safe to delete. Link: https://example.com/test-link"
@@ -73,9 +74,9 @@ try {
     $it = Item $id; Check "remove-category -All" ($r.Exit -eq 0 -and -not $it.Categories)
 
     # Move to sandbox (EntryID may change) and back
-    $r = Run "outlook-move.ps1" @("-EntryID", $id, "-Folder", "Inbox/_suite-test", "-Json")
+    $r = Run "outlook-move.ps1" @("-EntryID", $id, "-Folder", "Deleted Items/_suite-test", "-Json")
     $j = $r.Out | ConvertFrom-Json
-    $it = Item $j.EntryID; Check "move to Inbox/_suite-test" ($r.Exit -eq 0 -and $it.Parent.Name -eq "_suite-test")
+    $it = Item $j.EntryID; Check "move to Deleted Items/_suite-test" ($r.Exit -eq 0 -and $it.Parent.Name -eq "_suite-test")
     $id = $j.EntryID
     $r = Run "outlook-move.ps1" @("-EntryID", $id, "-Folder", "No/Such/Folder")
     Check "move to missing folder fails (exit 1)" ($r.Exit -eq 1 -and $r.Out -match "Error:")
@@ -129,9 +130,6 @@ finally {
             try { foreach ($i in @($f.Items.Restrict($mine))) { try { $i.Delete() } catch { } } } catch { }
         }
     }
-    if (-not $KeepSandbox -and $sandbox.Items.Count -eq 0 -and $sandbox.Folders.Count -eq 0) { try { $sandbox.Delete() } catch { } }
-    # Remove the sandbox folder from Deleted Items too.
-    foreach ($f in @($Namespace.GetDefaultFolder(3).Folders)) { if ($f.Name -eq "_suite-test") { try { $f.Delete() } catch { } } }
 }
 
 Write-Host ""
