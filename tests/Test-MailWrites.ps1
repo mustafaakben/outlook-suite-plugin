@@ -122,8 +122,12 @@ try {
     Check "bad EntryID exits 1" ($r.Exit -eq 1 -and $r.Out -match "Error:")
 }
 finally {
-    foreach ($f in @($sandbox, $Namespace.GetDefaultFolder(16), $Namespace.GetDefaultFolder(3))) {
-        foreach ($i in @($f.Items.Restrict("[Subject] = '$($draft.Subject.Replace("'", "''"))'"))) { try { $i.Delete() } catch { } }
+    # Remove every test item this or an earlier interrupted run left behind (subject "[suite-test] ...").
+    $mine = "@SQL=""urn:schemas:httpmail:subject"" LIKE '[suite-test]%'"
+    foreach ($pass in 1, 2) {   # pass 2 purges what pass 1 moved into Deleted Items
+        foreach ($f in @($sandbox, $Namespace.GetDefaultFolder(16), $Namespace.GetDefaultFolder(6), $Namespace.GetDefaultFolder(3))) {
+            try { foreach ($i in @($f.Items.Restrict($mine))) { try { $i.Delete() } catch { } } } catch { }
+        }
     }
     if (-not $KeepSandbox -and $sandbox.Items.Count -eq 0 -and $sandbox.Folders.Count -eq 0) { try { $sandbox.Delete() } catch { } }
     # Remove the sandbox folder from Deleted Items too.
