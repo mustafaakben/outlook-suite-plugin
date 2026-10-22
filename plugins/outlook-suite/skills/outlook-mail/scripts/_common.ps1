@@ -158,7 +158,14 @@ function Resolve-OutlookFolder {
     $cache = Get-FolderCache
     $key = "$($Path.ToLowerInvariant())|$([bool]$AllStores)"
     if ($cache.ContainsKey($key)) {
-        try { return $Namespace.GetFolderFromID($cache[$key][0], $cache[$key][1]) } catch { $cache.Remove($key) }
+        # Use the cached folder only if it still has the requested name (it may have been
+        # renamed or moved since; the warm host keeps this cache across calls).
+        $last = ($Path.Trim().TrimEnd('\', '/') -split '[\\/]')[-1]
+        try {
+            $hit = $Namespace.GetFolderFromID($cache[$key][0], $cache[$key][1])
+            if ($hit.Name -ieq $last -or $script:WellKnownFolders.ContainsKey($last.ToLowerInvariant())) { return $hit }
+        } catch { }
+        $cache.Remove($key)
     }
 
     $clean = $Path.Trim().TrimStart('\', '/').Replace('\', '/')
