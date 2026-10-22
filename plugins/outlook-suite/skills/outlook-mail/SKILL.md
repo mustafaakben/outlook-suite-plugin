@@ -103,7 +103,7 @@ Switching confirmation off (the user's choice):
 
 ## Speed: the warm host
 
-`scripts/outlook-call.ps1 <script> [arguments]` runs any script through one long-lived PowerShell + Outlook session (`outlook-host.ps1`, started automatically on first use, stops after 30 idle minutes, current Windows user only). Same output and exit code as a direct run. From an agent shell that stays open, calls take about half the time (find 7 days: ~320 ms vs ~600 ms). `outlook-call.ps1 --batch requests.json` runs many requests in one round trip; `--ping`, `--stop` manage the host. Concurrent callers are queued (Outlook serves one call at a time).
+`scripts/outlook-call.ps1 <script> [arguments]` runs any script through one long-lived PowerShell + Outlook session (`outlook-host.ps1`, started automatically on first use, stops after 30 idle minutes, current Windows user only). Same output and exit code as a direct run. Call it with `&` from the PowerShell you are already in: that takes about half the time of a direct run (find 7 days: ~320 ms vs ~600 ms). Starting a new `pwsh -File outlook-call.ps1` per call gains nothing, because starting pwsh costs what the host saves. The host needs PowerShell 7 (`pwsh`); under Windows PowerShell 5.1 `outlook-call.ps1` simply runs the script directly. All scripts themselves work in both. `outlook-call.ps1 --batch requests.json` runs many requests in one round trip; `--ping`, `--stop` manage the host. Concurrent callers are queued (Outlook serves one call at a time).
 
 ```powershell
 & scripts/outlook-call.ps1 find -Days 7 -UnreadOnly
@@ -123,4 +123,4 @@ Switching confirmation off (the user's choice):
 
 ## Tests
 
-`tests/` (run against the live profile; they print counts and PASS/FAIL only, write only to test items and a hidden `Deleted Items/_suite-test` folder, and send nothing): `Test-MailParity.ps1` (same results as a baseline copy), `Invoke-MailBench.ps1`, `Test-MailWrites.ps1`, `Test-MailCompose.ps1`, `Test-MailFolders.ps1`, `Test-MailRules.ps1 -Mailbox <test mailbox>`, `Test-MailExtras.ps1`, `Test-MailHost.ps1`.
+`tests/` (run against the live profile; they print counts and PASS/FAIL only, write only to test items and a hidden `Deleted Items/_suite-test` folder, and send nothing): `Test-MailParity.ps1` (same results as a baseline copy), `Invoke-MailBench.ps1`, `Test-MailWrites.ps1`, `Test-MailCompose.ps1`, `Test-MailFolders.ps1`, `Test-MailRules.ps1 -Mailbox <test mailbox>`, `Test-MailExtras.ps1`, `Test-MailHost.ps1`, `Test-MailPS51.ps1` (same results under Windows PowerShell 5.1 and PowerShell 7).

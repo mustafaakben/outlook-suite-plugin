@@ -60,7 +60,7 @@ try {
             while (-not $table.EndOfTable) {
                 $row = $table.GetNextRow()
                 $eid = $row.Item($script:Prop.LongTermEntryID)
-                $eid = if ($eid -is [byte[]]) { [Convert]::ToHexString($eid) } else { [string]$row.Item("EntryID") }
+                $eid = if ($eid -is [byte[]]) { ConvertTo-HexId $eid } else { [string]$row.Item("EntryID") }
                 $ids.Add($eid)
             }
         }

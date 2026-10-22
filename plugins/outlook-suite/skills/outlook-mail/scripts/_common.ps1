@@ -70,6 +70,10 @@ function Write-Json {
     Write-Output ($InputObject | ConvertTo-Json -Depth $Depth -Compress)
 }
 
+# Binary MAPI id (EntryID, ConversationID) as the hex string Outlook uses.
+# BitConverter instead of [Convert]::ToHexString, which Windows PowerShell 5.1 lacks.
+function ConvertTo-HexId([byte[]]$Bytes) { return [BitConverter]::ToString($Bytes).Replace("-", "") }
+
 # Date shown to agents: local time with UTC offset, e.g. 2026-10-22 09:15 -04:00
 function Format-MailDate {
     param($Date)
@@ -493,8 +497,8 @@ function Get-MailTableRecords {
     $store = $Folder.StoreID; $path = $Folder.FolderPath
     $list = New-Object System.Collections.Generic.List[object]
     for ($i = 0; $i -lt $n; $i++) {
-        $eid = $rows[$i, 12]; $eid = if ($eid -is [byte[]]) { [Convert]::ToHexString($eid) } else { [string]$rows[$i, 0] }
-        $conv = $rows[$i, 13]; $conv = if ($conv -is [byte[]]) { [Convert]::ToHexString($conv) } else { "" }
+        $eid = $rows[$i, 12]; $eid = if ($eid -is [byte[]]) { ConvertTo-HexId $eid } else { [string]$rows[$i, 0] }
+        $conv = $rows[$i, 13]; $conv = if ($conv -is [byte[]]) { ConvertTo-HexId $conv } else { "" }
         $name = [string]$rows[$i, 2]; $smtp = [string]$rows[$i, 3]
         $flags = $rows[$i, 6]
         $flagStatus = [int]$rows[$i, 10]

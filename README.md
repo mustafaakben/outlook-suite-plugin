@@ -52,7 +52,7 @@ claude plugin validate plugins/outlook-suite
 
 - Windows 10/11
 - Microsoft Outlook desktop installed
-- PowerShell 5.1+
+- PowerShell 5.1+ (PowerShell 7 `pwsh` for the mail warm host)
 - Outlook profile configured with mailbox access
 - Claude Code with plugin support (`/plugin ...` commands)
 

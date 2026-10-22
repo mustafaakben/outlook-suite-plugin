@@ -17,6 +17,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# The pipe's current-user-only protection exists in PowerShell 7 (.NET 5+) only.
+if ($PSVersionTable.PSVersion.Major -lt 7) { Write-Output "Error: the host needs PowerShell 7 (pwsh)."; exit 1 }
 $pipeName = "outlook-suite-$($env:USERNAME)"
 $logDir = Join-Path $env:LOCALAPPDATA "outlook-suite"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null

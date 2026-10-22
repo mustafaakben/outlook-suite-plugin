@@ -10,7 +10,7 @@ Automates Microsoft Outlook operations across email, calendar, contacts, tasks, 
 ## Prerequisites
 
 - Microsoft Outlook installed on Windows (scripts can start Outlook if needed)
-- PowerShell 5.1+ (included in Windows 10/11)
+- PowerShell 5.1+ (included in Windows 10/11); the mail warm host (`outlook-call.ps1`) needs PowerShell 7 (`pwsh`) and otherwise runs scripts directly
 - Exchange Server or Microsoft 365 for some features (shared mailboxes, free/busy, rooms, task assignment)
 
 ## Safety Rules
@@ -25,7 +25,7 @@ Automates Microsoft Outlook operations across email, calendar, contacts, tasks, 
 All modules use **EntryID** as the primary method to target specific items. An EntryID identifies one item, but it can change when the item moves to another folder or mailbox; scripts that move or copy print the new one.
 
 **Workflow:**
-1. Run a listing or search script to discover items (many return EntryID directly; for mail, prefer `outlook-find.ps1` for stable EntryIDs)
+1. Run a listing or search script to discover items (many return EntryID directly; for mail, prefer `outlook-find.ps1`)
 2. Use the EntryID from the results to target a specific item in action scripts
 
 ```powershell

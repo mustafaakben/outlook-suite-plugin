@@ -13,11 +13,13 @@
 #
 # Output and exit code are the same as running the script directly. The host starts
 # on first use and exits after 30 idle minutes. If the host cannot be reached, the
-# script runs directly in this shell instead.
+# script runs directly in this shell instead. Under Windows PowerShell 5.1, which cannot
+# open the current-user-only pipe, scripts always run directly.
 
 $ErrorActionPreference = "Stop"
 $pipeName = "outlook-suite-$($env:USERNAME)"
 $here = $PSScriptRoot
+$canUseHost = $PSVersionTable.PSVersion.Major -ge 7
 
 function ConvertTo-ArgToken($t) {
     if ($t -is [bool]) { if ($t) { return '$true' } else { return '$false' } }
@@ -82,6 +84,7 @@ function Start-OutlookHost {
 }
 
 function Invoke-ViaHost($request) {
+    if (-not $canUseHost) { throw "the host needs PowerShell 7 (pwsh)" }
     if (-not (Test-HostPipe)) {
         if (-not (Start-OutlookHost)) { throw "host did not start" }
     }
@@ -95,6 +98,9 @@ if (-not $first) {
     exit 1
 }
 
+if ($first -in "--ping", "--stop", "--batch" -and -not $canUseHost) {
+    Write-Output "Error: $first needs PowerShell 7 (pwsh). Run: pwsh -File outlook-call.ps1 $first ..."; exit 1
+}
 if ($first -eq "--ping") {
     if (-not (Test-HostPipe)) { Write-Output "host not running"; exit 1 }
     $r = Send-HostRequest @{ op = "ping" } 5000; Write-Output $r.output; exit 0
@@ -126,8 +132,8 @@ $request = @{ path = $path; argline = $argLine; cwd = (Get-Location).Path }
 try {
     $resp = Invoke-ViaHost $request
 } catch {
-    # Fallback: run directly in this shell.
-    Write-Host "(host unavailable: $($_.Exception.Message); running directly)" -ForegroundColor DarkGray
+    # Fallback: run directly in this shell (silently on 5.1, where that is the normal path).
+    if ($canUseHost) { Write-Host "(host unavailable: $($_.Exception.Message); running directly)" -ForegroundColor DarkGray }
     $global:LASTEXITCODE = 0
     Invoke-Expression "& '$($path.Replace("'", "''"))' $argLine"
     exit ([int]$global:LASTEXITCODE)
