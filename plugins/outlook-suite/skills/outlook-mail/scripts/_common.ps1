@@ -216,12 +216,15 @@ function Get-OutlookItem {
         [string]$DateProperty = "ReceivedTime"
     )
     if ($EntryID) {
-        try {
-            if ($StoreID) { return $Namespace.GetItemFromID($EntryID, $StoreID) }
-            return $Namespace.GetItemFromID($EntryID)
-        } catch {
-            throw "No item found with EntryID $($EntryID.Substring(0, [Math]::Min(16, $EntryID.Length)))... It may have been moved (moving can change the EntryID) or deleted. Run outlook-find.ps1 again to get a current EntryID."
+        if ($StoreID) {
+            try { return $Namespace.GetItemFromID($EntryID, $StoreID) } catch { }
         }
+        try { return $Namespace.GetItemFromID($EntryID) } catch { }
+        # Not in the default mailbox: try the other mailboxes, so callers never need a StoreID.
+        foreach ($s in (Get-SearchStores -Namespace $Namespace)) {
+            try { return $Namespace.GetItemFromID($EntryID, $s.StoreID) } catch { }
+        }
+        throw "No item found with EntryID $($EntryID.Substring(0, [Math]::Min(16, $EntryID.Length)))... It may have been moved (moving can change the EntryID) or deleted. Run outlook-find.ps1 again to get a current EntryID."
     }
     if ($Index -gt 0) {
         Write-Host "Note: -Index is volatile (positions shift as mail arrives). Prefer -EntryID." -ForegroundColor DarkGray
@@ -325,7 +328,7 @@ function Write-MailRecord {
     param($Record, [string]$Header = "", [switch]$LinkTable)
     if ($Header) { Write-Host $Header -ForegroundColor Cyan }
     Write-Host "  EntryID: $($Record.EntryID)"
-    if ($Record.StoreID) { Write-Host "  StoreID: $($Record.StoreID)" -ForegroundColor DarkGray }
+    # StoreID is long and not needed (lookups search every mailbox); it stays in -Json output.
     if ($Record.ConversationID) { Write-Host "  ConversationID: $($Record.ConversationID)" -ForegroundColor DarkGray }
     if ($Record.Folder) { Write-Host "  Folder: $($Record.Folder)" -ForegroundColor DarkGray }
     Write-Host "  Subject: $($Record.Subject)" -ForegroundColor Yellow
@@ -521,7 +524,6 @@ function Write-MailList {
     param($Result, $Folder, [string]$Title = "OUTLOOK FIND", [string[]]$Criteria = @(), [int]$Limit = 50)
     Write-Host "=== $Title ===" -ForegroundColor Cyan
     Write-Host "Folder: $($Folder.FolderPath)"
-    Write-Host "StoreID: $($Folder.StoreID)" -ForegroundColor DarkGray
     if ($Criteria.Count -gt 0) { Write-Host "Filters: $($Criteria -join ' | ')" -ForegroundColor Gray }
     Write-Host ""
     $n = 0
