@@ -118,11 +118,37 @@ try {
     $gone = $true; foreach ($d in $deleted.Items.Restrict("[Subject] = '$($draft.Subject.Replace("'", "''"))'")) { $gone = $false }
     Check "delete -Permanent -Confirm purges" ($r.Exit -eq 0 -and $gone)
 
+    # Master categories (test names only)
+    $cat = "suite-test-cat"
+    $r = Run "outlook-create-category.ps1" @("-Name", $cat, "-Color", "Green")
+    $c = Get-OutlookCategory $Namespace $cat; Check "create-category by color name" ($r.Exit -eq 0 -and $c -and $c.Color -eq 5)
+    $r = Run "outlook-create-category.ps1" @("-Name", $cat)
+    Check "create-category duplicate fails (exit 1)" ($r.Exit -eq 1)
+    $r = Run "outlook-update-category.ps1" @("-Name", $cat, "-NewName", "$cat-2", "-Color", "DarkBlue")
+    $c = Get-OutlookCategory $Namespace "$cat-2"; Check "update-category rename + recolor" ($r.Exit -eq 0 -and $c -and $c.Color -eq 23)
+    $r = Run "outlook-delete-category.ps1" @("-Name", "$cat-2")
+    Check "delete-category previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW" -and (Get-OutlookCategory $Namespace "$cat-2"))
+    $r = Run "outlook-delete-category.ps1" @("-Name", "$cat-2", "-Confirm")
+    Check "delete-category -Confirm" ($r.Exit -eq 0 -and -not (Get-OutlookCategory $Namespace "$cat-2"))
+
+    # Read-only info scripts
+    $r = Run "outlook-accounts-list.ps1" @("-Json"); $j = $r.Out | ConvertFrom-Json
+    Check "accounts-list -Json (one default)" ($r.Exit -eq 0 -and $j.count -ge 1 -and @($j.accounts | Where-Object Default).Count -eq 1)
+    $r = Run "outlook-list-categories.ps1" @("-Json")
+    Check "list-categories -Json" ($r.Exit -eq 0 -and ($r.Out | ConvertFrom-Json).count -ge 0)
+    $r = Run "outlook-out-of-office.ps1" @("-Status", "-Json")
+    Check "out-of-office -Status (read-only)" ($r.Exit -eq 0 -and ($r.Out | ConvertFrom-Json).AutomaticReplies -in @("On", "Off"))
+    $r = Run "outlook-out-of-office.ps1" @("-Enable")
+    Check "out-of-office -Enable previews without -Confirm" ($r.Exit -eq 0 -and $r.Out -match "PREVIEW")
+
     # Errors
     $r = Run "outlook-flag.ps1" @("-EntryID", "00AB")
     Check "bad EntryID exits 1" ($r.Exit -eq 1 -and $r.Out -match "Error:")
 }
 finally {
+    foreach ($n in "suite-test-cat", "suite-test-cat-2") {
+        $i = 0; foreach ($c in $Namespace.Categories) { $i++; if ($c.Name -eq $n) { $Namespace.Categories.Remove($i); break } }
+    }
     # Remove every test item this or an earlier interrupted run left behind (subject "[suite-test] ...").
     $mine = "@SQL=""urn:schemas:httpmail:subject"" LIKE '[suite-test]%'"
     foreach ($pass in 1, 2) {   # pass 2 purges what pass 1 moved into Deleted Items

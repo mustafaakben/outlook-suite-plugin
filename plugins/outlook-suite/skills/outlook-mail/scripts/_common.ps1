@@ -272,6 +272,22 @@ function Get-RecipientList {
 
 $script:ImportanceNames = @{ 0 = "Low"; 1 = "Normal"; 2 = "High" }
 
+$script:CategoryColors = @("None", "Red", "Orange", "Peach", "Yellow", "Green", "Teal", "Olive", "Blue", "Purple",
+    "Maroon", "Steel", "DarkSteel", "Gray", "DarkGray", "Black", "DarkRed", "DarkOrange", "DarkPeach", "DarkYellow",
+    "DarkGreen", "DarkTeal", "DarkOlive", "DarkBlue", "DarkPurple", "DarkMaroon")
+
+# Color given as a name ("Green") or an index ("5") -> index 0..25.
+function Resolve-CategoryColor([string]$Color) {
+    if ($Color -match '^\d+$' -and [int]$Color -le 25) { return [int]$Color }
+    for ($i = 0; $i -lt $script:CategoryColors.Count; $i++) { if ($script:CategoryColors[$i] -ieq $Color) { return $i } }
+    throw "Unknown color '$Color'. Use a name ($($script:CategoryColors -join ', ')) or 0-25."
+}
+
+function Get-OutlookCategory($Namespace, [string]$Name) {
+    foreach ($c in $Namespace.Categories) { if ($c.Name -ieq $Name) { return $c } }
+    return $null
+}
+
 # A full description of one item, used by single-item views and action results.
 function ConvertTo-MailRecord {
     param($Item, [switch]$WithRecipients, [switch]$WithBody, [string]$Links = "domain")
