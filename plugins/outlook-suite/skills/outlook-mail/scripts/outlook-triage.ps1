@@ -43,6 +43,8 @@ param(
 $CopilotScore = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/CopilotInboxScore"
 $LastVerb = "http://schemas.microsoft.com/mapi/proptag/0x10810003"   # 102 reply, 103 reply all, 104 forward
 $FlagDue = "http://schemas.microsoft.com/mapi/id/{00062003-0000-0000-C000-000000000046}/81050040"
+$ToMe = "http://schemas.microsoft.com/mapi/proptag/0x0057000B"      # Outlook's own "sent to me" / "CC to me" flags
+$CcMe = "http://schemas.microsoft.com/mapi/proptag/0x0058000B"
 $Keywords = '"urn:schemas-microsoft-com:office:office#Keywords"'
 $PriorityNames = @{ 5 = "High"; 3 = "Normal"; 1 = "Low" }
 $VerbNames = @{ 102 = "replied"; 103 = "replied all"; 104 = "forwarded" }
@@ -105,7 +107,8 @@ try {
     $table.Columns.RemoveAll()
     $cols = @($script:Prop.LongTermEntryID, "Subject", "SenderName", $script:Prop.SenderSmtp, "ReceivedTime",
         $script:Prop.MessageFlags, "urn:schemas:httpmail:displayto", "urn:schemas:httpmail:displaycc", "Categories",
-        $script:Prop.FlagStatus, $FlagDue, $LastVerb, $CopilotScore, $script:Prop.ConversationID, $script:Prop.Preview)
+        $script:Prop.FlagStatus, $FlagDue, $LastVerb, $CopilotScore, $script:Prop.ConversationID, $script:Prop.Preview,
+        $ToMe, $CcMe)
     foreach ($c in $cols) { [void]$table.Columns.Add($c) }
     $table.Sort("ReceivedTime", $true)
     $rowCount = $table.GetRowCount()
@@ -126,7 +129,11 @@ try {
         if ($wantPriority.Count -gt 0 -and $prio -notin $wantPriority) { continue }
 
         $toNames = @(Split-List ([string]$rows[$i, 6])); $ccNames = @(Split-List ([string]$rows[$i, 7]))
-        $you = if ($toNames -contains $me) { "To" } elseif ($ccNames -contains $me) { "CC" } else { "" }
+        $you = if ($rows[$i, 15]) { "To" } elseif ($rows[$i, 16]) { "CC" }
+        elseif ($null -eq $rows[$i, 15]) {
+            # Flags missing (some item types): fall back to the display names.
+            if ($toNames -contains $me) { "To" } elseif ($ccNames -contains $me) { "CC" } else { "" }
+        } else { "" }
         $flagStatus = [int]$rows[$i, 9]
         $due = $rows[$i, 10]; $dueText = if ($flagStatus -eq 2 -and $due -and ([datetime]$due).Year -lt 4500) { ([datetime]$due).ToString("yyyy-MM-dd") } else { "" }
         $eid = $rows[$i, 0]; $conv = $rows[$i, 13]
