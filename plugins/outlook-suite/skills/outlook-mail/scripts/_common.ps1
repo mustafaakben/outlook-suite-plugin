@@ -6,6 +6,7 @@
 #   - inside outlook-host.ps1: reuses the warm Outlook session in $global:OutlookSuite.
 
 Set-StrictMode -Off
+. (Join-Path $PSScriptRoot "recipient-resolution.ps1")   # Assert-OutlookRecipients
 
 # ---------------------------------------------------------------------------
 # Connection
@@ -695,6 +696,172 @@ function Format-Preview {
     $t = (Format-MailLinks -Text $t -Mode domain).Text
     if ($t.Length -gt $Length) { $t = $t.Substring(0, $Length) + "..." }
     return $t
+}
+
+# ---------------------------------------------------------------------------
+# Composing: Outlook-native HTML, reply/forward insertion, mail builder
+# ---------------------------------------------------------------------------
+
+$script:NativeFont = "Aptos, Aptos_EmbeddedFont, Aptos_MSFontService, Calibri, Helvetica, sans-serif"
+
+# Plain text -> the HTML Outlook itself writes for new messages: one <div> per line,
+# Aptos 11pt, black, class "elementToProof", and <div><br></div> for blank lines.
+function ConvertTo-OutlookHtml {
+    param([string]$Text, [string]$Font = $script:NativeFont, [string]$Size = "11pt")
+    $style = "font-family: $Font; font-size: $Size; color: rgb(0, 0, 0);"
+    $lines = ($Text -replace "`r", "").Split("`n")
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($line in $lines) {
+        if ($line.Trim() -eq "") { [void]$sb.Append("<div style=""$style"" class=""elementToProof""><br></div>") }
+        else { [void]$sb.Append("<div style=""$style"" class=""elementToProof"">$([System.Net.WebUtility]::HtmlEncode($line))</div>") }
+    }
+    return $sb.ToString()
+}
+
+# Resolve the body a caller asked for into HTML (or $null for plain text).
+#   -HtmlFile path | -HTML (Body is HTML) | -Native (Body is text, render Outlook-native) | text
+function Get-ComposeBody {
+    param([string]$Body, [switch]$HTML, [string]$HtmlFile, [switch]$Native)
+    if ($HtmlFile) {
+        if (-not (Test-Path -LiteralPath $HtmlFile)) { throw "HTML file not found: $HtmlFile" }
+        return @{ Html = (Get-Content -LiteralPath $HtmlFile -Raw -Encoding UTF8); Text = $null }
+    }
+    if ($HTML) { return @{ Html = $Body; Text = $null } }
+    if ($Native) { return @{ Html = (ConvertTo-OutlookHtml $Body); Text = $null } }
+    return @{ Html = $null; Text = $Body }
+}
+
+# Remove the auto-signature Outlook inserts into replies/forwards (<a name="_MailAutoSig">),
+# from its block up to the quoted header (<a name="_MailOriginal">). Returns the new HTML.
+function Remove-AutoSignature {
+    param([string]$Html)
+    $sig = $Html.IndexOf("_MailAutoSig")
+    if ($sig -lt 0) { return $Html }
+    # Start of the run of opening tags that leads into the signature anchor.
+    $start = $Html.LastIndexOf("<p", $sig)
+    while ($start -gt 0) {
+        $prev = $Html.LastIndexOf("<", $start - 1)
+        if ($prev -ge 0 -and $Html.Substring($prev, $start - $prev) -match '^<div[^>]*>\s*$') { $start = $prev } else { break }
+    }
+    $orig = $Html.IndexOf("_MailOriginal")
+    $end = if ($orig -gt $sig) { $Html.LastIndexOf("<div", $orig) } else { $Html.IndexOf("</body>", $sig) }
+    if ($start -lt 0 -or $end -le $start) { return $Html }
+    return $Html.Remove($start, $end - $start)
+}
+
+# Put the caller's HTML at the top of a reply/forward body (above signature and quoted thread),
+# inside a marked block. If the block already exists (draft being updated), replace it.
+function Set-ReplyBlock {
+    param($Item, [string]$Html, [switch]$RemoveAutoSignature)
+    $h = $Item.HTMLBody
+    $block = "<!--suite-reply-start--><div id=""suite-reply"">$Html</div><!--suite-reply-end-->"
+    $s = $h.IndexOf("<!--suite-reply-start-->"); $e = $h.IndexOf("<!--suite-reply-end-->")
+    if ($s -ge 0 -and $e -gt $s) {
+        $h = $h.Remove($s, $e + "<!--suite-reply-end-->".Length - $s).Insert($s, $block)
+    } else {
+        if ($RemoveAutoSignature) { $h = Remove-AutoSignature $h }
+        $m = [regex]::Match($h, '<div class=WordSection1>')
+        if (-not $m.Success) { $m = [regex]::Match($h, '<body[^>]*>') }
+        $at = if ($m.Success) { $m.Index + $m.Length } else { 0 }
+        $h = $h.Insert($at, $block)
+    }
+    $Item.HTMLBody = $h
+}
+
+# Apply compose options to a MailItem (new, reply, forward or existing draft).
+function Set-MailFields {
+    param(
+        $Mail,
+        [string]$To, [string]$CC, [string]$BCC, [string]$Subject,
+        [string]$Account, [string]$Importance, [string]$Sensitivity,
+        [switch]$ReadReceipt, [switch]$DeliveryReceipt, [string]$VotingOptions, $SendAt,
+        [string[]]$Attachment = @()
+    )
+    if ($PSBoundParameters.ContainsKey("To") -and $To) { $Mail.To = $To }
+    if ($PSBoundParameters.ContainsKey("CC") -and $CC) { $Mail.CC = $CC }
+    if ($PSBoundParameters.ContainsKey("BCC") -and $BCC) { $Mail.BCC = $BCC }
+    if ($Subject) { $Mail.Subject = $Subject }
+    if ($Account) {
+        $acct = $null
+        foreach ($a in $Namespace.Accounts) {
+            if ($a.SmtpAddress -ieq $Account -or $a.DisplayName -ieq $Account) { $acct = $a; break }
+        }
+        if (-not $acct) { throw "Account '$Account' not found. See outlook-accounts-list.ps1." }
+        $Mail.SendUsingAccount = $acct
+    }
+    if ($Importance) { $Mail.Importance = @{ "Low" = 0; "Normal" = 1; "High" = 2 }[$Importance] }
+    if ($Sensitivity) { $Mail.Sensitivity = @{ "Normal" = 0; "Personal" = 1; "Private" = 2; "Confidential" = 3 }[$Sensitivity] }
+    if ($ReadReceipt) { $Mail.ReadReceiptRequested = $true }
+    if ($DeliveryReceipt) { $Mail.OriginatorDeliveryReportRequested = $true }
+    if ($VotingOptions) { $Mail.VotingOptions = $VotingOptions }
+    if ($SendAt) { $Mail.DeferredDeliveryTime = [datetime]$SendAt }
+    foreach ($f in $Attachment) {
+        if (-not $f) { continue }
+        if (-not (Test-Path -LiteralPath $f)) { throw "Attachment not found: $f" }
+        [void]$Mail.Attachments.Add((Resolve-Path -LiteralPath $f).Path)
+    }
+}
+
+# Create a new message from a script's bound parameters, then save it as a draft or send it.
+# Sending is gated: without -Confirm (and with confirmation on) it previews and discards.
+function Invoke-NewMail {
+    param([hashtable]$P, [string]$Action = "draft", [switch]$Send, [string]$Next = "")
+    $mail = $Outlook.CreateItem(0)
+    $body = Get-ComposeBody -Body $P.Body -HTML:([bool]$P.HTML) -HtmlFile $P.HtmlFile -Native:([bool]$P.Native)
+    if ($body.Html) { $mail.HTMLBody = $body.Html } elseif ($null -ne $body.Text) { $mail.Body = $body.Text }
+    $fields = @{}
+    foreach ($k in "To", "CC", "BCC", "Subject", "Account", "Importance", "Sensitivity", "VotingOptions", "SendAt", "Attachment", "ReadReceipt", "DeliveryReceipt") {
+        if ($P.ContainsKey($k) -and $null -ne $P[$k] -and "$($P[$k])" -ne "") { $fields[$k] = $P[$k] }
+    }
+    if ($fields.ContainsKey("Attachment")) { $fields.Attachment = @($fields.Attachment) }
+    Set-MailFields -Mail $mail @fields
+    Assert-OutlookRecipients $mail
+
+    if ($Send) {
+        if (-not ([bool]$P.Confirm -or -not (Test-ConfirmRequired -Action $Action))) {
+            Write-ComposeSummary -Mail $mail -Title "PREVIEW (not sent)" -Json:([bool]$P.Json) -Action $Action
+            if (-not $P.Json) { Approve-Action -Action $Action -Confirmed $false -What "sending" | Out-Null }
+            try { $mail.Close(1) } catch { }   # olDiscard
+            return
+        }
+        $summaryMail = $mail
+        $mail.Send()
+        Write-ComposeSummary -Mail $summaryMail -Title "SENT" -Json:([bool]$P.Json) -Action $Action -Next "Find it in Sent Items: outlook-find.ps1 -Folder Sent -Days 1"
+        return
+    }
+    $mail.Save()
+    if ($P.Display) { $mail.Display() }
+    Write-ComposeSummary -Mail $mail -Title "DRAFT SAVED" -Json:([bool]$P.Json) -Action $Action -Next $(if ($Next) { $Next } else { "Review in Drafts; send with outlook-send-draft.ps1 -EntryID <EntryID> -Confirm" })
+}
+
+# Text summary of a composed message (draft or about to send).
+function Write-ComposeSummary {
+    param($Mail, [string]$Title, [string]$Original = "", [switch]$Json, [string]$Action = "", [string]$Next = "")
+    $att = @(); for ($i = 1; $i -le $Mail.Attachments.Count; $i++) { $att += $Mail.Attachments.Item($i).FileName }
+    $preview = Format-Preview $Mail.Body 300
+    $o = [ordered]@{
+        Result = $Title; Action = $Action; EntryID = $Mail.EntryID; Subject = $Mail.Subject
+        To = $Mail.To; CC = $Mail.CC; BCC = $Mail.BCC
+        From = $(try { $Mail.SendUsingAccount.SmtpAddress } catch { "" })
+        Format = @{ 1 = "text"; 2 = "html"; 3 = "rtf" }[[int]$Mail.BodyFormat]
+        Attachments = $att; Preview = $preview
+    }
+    if ($Mail.DeferredDeliveryTime -and ([datetime]$Mail.DeferredDeliveryTime).Year -lt 4500) { $o.SendAt = Format-MailDateIso $Mail.DeferredDeliveryTime }
+    if ($Original) { $o.InReplyTo = $Original }
+    if ($Json) { Write-Json $o; return }
+    Write-Host "=== $Title ===" -ForegroundColor Green
+    if ($o.EntryID) { Write-Host "  EntryID: $($o.EntryID)" }
+    if ($Original) { Write-Host "  Original: $Original" -ForegroundColor DarkGray }
+    Write-Host "  Subject: $($o.Subject)" -ForegroundColor Yellow
+    if ($o.From) { Write-Host "  From account: $($o.From)" }
+    Write-Host "  To: $($o.To)"
+    if ($o.CC) { Write-Host "  CC: $($o.CC)" }
+    if ($o.BCC) { Write-Host "  BCC: $($o.BCC)" }
+    Write-Host "  Format: $($o.Format)"
+    if ($o.SendAt) { Write-Host "  Send at: $(Format-MailDate $Mail.DeferredDeliveryTime)" -ForegroundColor Cyan }
+    if ($att.Count) { Write-Host "  Attachments ($($att.Count)): $($att -join ', ')" }
+    if ($preview) { Write-Host "  Preview: $preview" -ForegroundColor Gray }
+    if ($Next) { Write-Host "  Next: $Next" -ForegroundColor DarkGray }
 }
 
 # ---------------------------------------------------------------------------
