@@ -25,7 +25,9 @@ try {
     $null = Connect-Outlook
     $rem = $Outlook.Reminders
     $horizon = (Get-Date).AddDays($Days)
-    $listAll = ($Action -eq "List" -and $All)
+    # The due/upcoming window only shapes the List display. Snooze/Dismiss of an explicit
+    # target (-Caption/-Index) look through every reminder.
+    $listAll = ($Action -eq "List" -and $All) -or ($Action -ne "List" -and -not $All)
     function Get-ReminderList {
       @(for ($i = 1; $i -le $rem.Count; $i++) {
         $r = $rem.Item($i)
@@ -77,13 +79,30 @@ try {
         Approve-Action -Action "reminders" -Confirmed $false -What "dismissing" | Out-Null
         exit 0
     }
+    # Outlook reorders the Reminders collection as it fires reminders, so a position from the
+    # listing may now point at another reminder. Re-find each target by caption + item EntryID
+    # right before acting, and never act on anything else.
+    function Find-LiveReminder($t) {
+        for ($i = 1; $i -le $rem.Count; $i++) {
+            $r = $rem.Item($i)
+            if ($r.Caption -ne $t.Caption) { continue }
+            $eid = ""; try { $eid = $r.Item.EntryID } catch { }
+            if (-not $t.EntryID -or $eid -eq $t.EntryID) { return $r }
+        }
+        return $null
+    }
     $done = @(); $failed = @()
-    foreach ($t in ($targets | Sort-Object Index -Descending)) {
-        try {
-            $r = $rem.Item($t.Index)
-            if ($Action -eq "Snooze") { $r.Snooze($Minutes) } else { $r.Dismiss() }
-            $done += $t.Caption
-        } catch { $failed += "$($t.Caption): $($_.Exception.Message)" }
+    foreach ($t in $targets) {
+        $ok = $false; $err = "not found any more"
+        foreach ($attempt in 1, 2) {
+            $r = Find-LiveReminder $t
+            if ($r) {
+                try { if ($Action -eq "Snooze") { $r.Snooze($Minutes) } else { $r.Dismiss() }; $ok = $true; break }
+                catch { $err = $_.Exception.Message }
+            }
+            Start-Sleep -Seconds 2
+        }
+        if ($ok) { $done += $t.Caption } else { $failed += "$($t.Caption): $err" }
     }
     if ($Json) { Write-Json ([ordered]@{ Action = $Action; Done = $done; Failed = $failed }); if ($failed) { exit 1 } else { exit 0 } }
     Write-Host "=== $($Action.ToUpper()) DONE ($($done.Count)) ===" -ForegroundColor Green
