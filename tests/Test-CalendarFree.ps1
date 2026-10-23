@@ -94,6 +94,30 @@ Check "unknown attendee is reported, search still runs" ($r.Exit -eq 0 -and $r.O
 $r = Run "outlook-calendar-free.ps1" @("-Days", "3", "-Duration", "600")
 Check "impossible duration: widens, then lists the skipped days and options, exit 0" ($r.Exit -eq 0 -and $r.Out -match "is taken" -and $r.Out -match "Options:" -and $r.Out -match "widened")
 
+# 1a. Steering flags (3.1): tier filter, busy days, spread, time-of-day preference, skipped days.
+$tierPresent = @($free.Slots | ForEach-Object { [int]$_.Tier } | Sort-Object -Unique)
+if ($tierPresent.Count) {
+    $pick = $tierPresent[-1]
+    $r = Run "outlook-calendar-free.ps1" @("-Days", "14", "-Tier", "$pick", "-Json"); $j = J $r
+    Check "-Tier $pick offers only that tier" ($r.Exit -eq 0 -and $j -and @($j.Slots | Where-Object { $_.Tier -ne $pick }).Count -eq 0 -and @($j.Tiers) -join "," -eq "$pick")
+}
+$r = Run "outlook-calendar-free.ps1" @("-Days", "14", "-Tier", "1,3", "-Json"); $j = J $r
+Check "-Tier '1,3' (one string) is split" ($r.Exit -eq 0 -and $j -and (@($j.Tiers) -join ",") -eq "1,3" -and @($j.Slots | Where-Object { $_.Tier -notin 1, 3 }).Count -eq 0)
+$r = Run "outlook-calendar-free.ps1" @("-Days", "14", "-IncludeBusy", "-Top", "50", "-Json"); $j = J $r
+Check "-IncludeBusy keeps every normal slot" ($r.Exit -eq 0 -and $j -and @($j.Slots).Count -ge @($free.Slots | Where-Object { $_.Tier -le 3 }).Count -and (@($j.Tiers) -join ",") -eq "1,2,3,4")
+$r = Run "outlook-calendar-free.ps1" @("-Days", "14", "-Propose", "-Spread", "-Count", "4", "-Json"); $j = J $r
+$tiersOffered = @($free.Slots | Where-Object { $_.Tier -le 3 } | ForEach-Object { $_.Tier } | Sort-Object -Unique).Count
+Check "-Spread -Propose covers every offered tier first" ($r.Exit -eq 0 -and $j -and @($j.Proposals | ForEach-Object { $_.Tier } | Sort-Object -Unique).Count -ge [Math]::Min($tiersOffered, 4))
+$r = Run "outlook-calendar-free.ps1" @("-Days", "14", "-Prefer", "Afternoon", "-Json"); $j = J $r
+$pmA = @($j.Slots | Where-Object { (D $_.Start).Hour -ge 12 }).Count; $pm0 = @($free.Slots | Where-Object { (D $_.Start).Hour -ge 12 }).Count
+Check "-Prefer Afternoon never offers fewer afternoon slots" ($r.Exit -eq 0 -and $j -and $pmA -ge [Math]::Min($pm0, @($j.Slots).Count)) "pm=$pmA vs $pm0"
+$r = Run "outlook-calendar-free.ps1" @("-Days", "14", "-SkipDays", "Mon,Tue", "-Json"); $j = J $r
+Check "-SkipDays Mon,Tue leaves those days out" ($r.Exit -eq 0 -and $j -and @($j.Slots | Where-Object { (D $_.Start).DayOfWeek -in "Monday", "Tuesday" }).Count -eq 0)
+$r = Run "outlook-calendar-free.ps1" @("-Tier", "5", "-Days", "2")
+Check "-Tier 5 is rejected" ($r.Exit -ne 0 -and $r.Out -match "Tier")
+$r = Run "outlook-calendar-free.ps1" @("-SkipDays", "Xyz", "-Days", "2")
+Check "-SkipDays with a bad value is rejected" ($r.Exit -ne 0 -and $r.Out -match "SkipDays")
+
 # 1b. Independent Kind check: every meeting the user organizes in the next 30 days, classified
 #     from the table path (list) and from the opened item, must agree.
 . (Join-Path $ScriptsDir "_calendar.ps1")

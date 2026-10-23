@@ -5,7 +5,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 
 # Outlook Mail
 
-52 PowerShell scripts in `scripts/` that drive classic Outlook (running on this Windows PC) through COM. Every script works standalone (`pwsh -File scripts/<name>.ps1 ...`); a warm host makes repeated calls about twice as fast.
+56 PowerShell scripts in `scripts/` that drive classic Outlook (running on this Windows PC) through COM. Every script works standalone (`pwsh -File scripts/<name>.ps1 ...`); a warm host makes repeated calls about twice as fast.
 
 ## How to work
 
@@ -26,12 +26,14 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 | Latest emails | `outlook-read.ps1` | `-Days 1 -Limit 20 -UnreadOnly -Folder -Priority High,Normal,Low` |
 | Quick text search | `outlook-search.ps1` | `-Subject -From -Body [-FastBody] -Days -Folder` |
 | Search many folders / whole mailbox / all mailboxes | `outlook-search-advanced.ps1` | `-Folders "Inbox;Archive" -IncludeSubfolders -WholeMailbox -AllMailboxes` + find filters, `-SaveAs "name"` (Outlook Search Folder) |
+| Everything about a topic: mail, calendar, contacts, tasks, notes AND local files | `outlook-everything.ps1` | `"words" [-Kind Mail,Calendar,Contact,Task,Note,File] -Days -From -Path <folder> -Top 10 -NoResolve -Json` (see Everything search) |
 | What the user has selected in Outlook | `outlook-selection.ps1` | `-Body` |
 | One email in full | `outlook-read-body.ps1` | `-EntryID [-Links domain|full|none] [-Format html] -Json` |
 | Whole thread, oldest first | `outlook-conversation.ps1` | `-EntryID [-TrimQuoted] [-Preview 300] [-HeadersOnly]` |
 | Full URLs behind `[URL-00N]` | `outlook-links.ps1` | `-EntryID [-Ref URL-003]` |
 | Internet headers, SPF/DKIM/DMARC, phishing signs | `outlook-headers.ps1` | `-EntryID [-Raw]` |
 | Attachments: list / save | `outlook-attachment-save.ps1` | `-EntryID -ListOnly | -Path -AttachmentIndex -IncludeInline` |
+| Attachments: read the text (Word, Excel, PowerPoint, PDF, .msg, text) | `outlook-attachment-read.ps1` | `-EntryID [-AttachmentIndex] -MaxChars 8000 -MaxRows 200 -IncludeInline -Json`, or `-FilePath <local file>` (see Reading attachments) |
 | New draft | `outlook-draft.ps1` | `-To -Subject -Body [-Native|-HTML|-HtmlFile] -CC -BCC -Attachment -Account -Importance -Sensitivity` |
 | Change a draft | `outlook-draft-update.ps1` | `-EntryID -To/-AddTo -CC/-AddCC -Subject -Body [-AppendBody] -AddAttachment -RemoveAttachment -Importance -Account` |
 | Send a reviewed draft | `outlook-send-draft.ps1` | `-EntryID -Confirm` |
@@ -59,6 +61,31 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 | Accounts, mailboxes, sizes | `outlook-accounts-list.ps1`, `outlook-stores.ps1` (`-TopFolders 15`) | |
 | Save / print / import | `outlook-save-as.ps1` (`-Format msgunicode|msg|txt|html|mht|rtf|doc|template`), `outlook-print.ps1 -Confirm`, `outlook-import-msg.ps1 -Path` | |
 | Recall | `outlook-recall.ps1` | `-EntryID -OpenRecallDialog` (opens Outlook's recall dialog) or `-DeleteUnread -Confirm` (Sent copy only) |
+
+## Everything search (`outlook-everything.ps1`)
+
+One full-text query over the Windows Search index, the same index behind Outlook's and Explorer's search boxes. It covers every indexed mail and calendar item, contacts, tasks, notes, and local files (Documents, Dropbox, and whatever else Indexing Options lists), usually in 1 to 3 s.
+
+- Words are ANDed; `"quoted phrases"` stay together; `budg*` is a prefix match.
+- Each kind is queried on its own (`-Top` each, default 10), so files cannot crowd out mail.
+- Outlook hits come back with a real `EntryID` (the index's short-term id is opened through Outlook), ready for `outlook-read-body.ps1`, `outlook-attachment-read.ps1` or `outlook-calendar-prep.ps1`. A hit moved since indexing shows no EntryID. `-NoResolve` skips that lookup.
+- `-Days` filters by received date (mail), start (calendar; a recurring series counts by its first start) or last change (others). `-From` applies to mail; `-Path` limits files to one folder tree.
+- Only what Windows Search has indexed is found. Mail from the last minutes may not be indexed yet; use `outlook-find.ps1` for that.
+
+## Reading attachments (`outlook-attachment-read.ps1`)
+
+Returns the text of each attachment (inline images skipped) so the agent can triage or prep without opening files. Read-only. Each file is copied to a private temp folder that is deleted afterwards.
+
+| Type | How |
+|---|---|
+| `.docx` `.xlsx` `.pptx` | Read from the file's XML; no Office app starts. Word tables come out as tab-separated cells, slides as `--- Slide N ---` with `[Notes]`, sheets as `--- Sheet: name (N rows) ---` with tab-separated cells (`-MaxRows`, default 200). |
+| `.pdf` `.doc` `.rtf` `.odt` | Word, hidden and read-only, macros forced off. Scanned PDFs have no text. |
+| `.xls` / `.ppt` | Excel / PowerPoint, the same way. |
+| `.msg` (attached email) | Headers and body through Outlook. |
+| `.txt` `.csv` `.md` `.html` and other text | Read directly; HTML tags stripped. |
+| Images, archives, other binaries | Listed as not readable. |
+
+Text is cut at `-MaxChars` (default 8000, `0` for all) with the full length reported. `-FilePath` reads a local file the same way, e.g. a File hit from `outlook-everything.ps1`. Password-protected files fail at once instead of prompting.
 
 ## Triage
 

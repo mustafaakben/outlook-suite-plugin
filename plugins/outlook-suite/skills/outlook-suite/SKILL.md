@@ -5,7 +5,7 @@ description: "Complete Microsoft Outlook automation via PowerShell COM objects o
 
 # Outlook Suite
 
-Automates Microsoft Outlook across email, calendar, people and contacts, tasks and notes using PowerShell COM objects: 92 scripts in 5 modules (mail 54, calendar 15, contacts 10, tasks 9, notes 4). Version 3.0 brings every module to the same standard: one shared connection and output layer, fast table queries, `-Json` on every script, `Error: ...` with exit code 1 on failure, Windows PowerShell 5.1 and PowerShell 7, and the same confirmation gate for every irreversible action.
+Automates Microsoft Outlook across email, calendar, people and contacts, tasks and notes using PowerShell COM objects: 94 scripts in 5 modules (mail 56, calendar 15, contacts 10, tasks 9, notes 4). Version 3.0 brings every module to the same standard: one shared connection and output layer, fast table queries, `-Json` on every script, `Error: ...` with exit code 1 on failure, Windows PowerShell 5.1 and PowerShell 7, and the same confirmation gate for every irreversible action.
 
 ## Prerequisites
 
@@ -52,10 +52,10 @@ Each module has its own SKILL.md with full parameter tables and examples. **Load
 
 ### Email — [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)
 
-54 scripts:
+56 scripts:
 
 - **Triage**: `outlook-triage.ps1` (unread untagged mail, mail by tag, mail not replied to) with Copilot's priority; `outlook-priority.ps1` ranks all received mail by Copilot priority; `outlook-smart-reply.ps1` turns Copilot's suggested replies into drafts.
-- **Find and read**: `outlook-find.ps1` for EntryIDs with rich filters, whole-mailbox search, full bodies with numbered link citations (`[URL-001]`), threads, headers, attachments.
+- **Find and read**: `outlook-find.ps1` for EntryIDs with rich filters, whole-mailbox search, full bodies with numbered link citations (`[URL-001]`), threads, headers, attachments. `outlook-everything.ps1` searches mail, calendar, contacts, tasks, notes and local files at once through the Windows Search index; `outlook-attachment-read.ps1` returns the text of Word, Excel, PowerPoint, PDF and `.msg` attachments (or of a local file).
 - **Compose and send**: draft, update, send a reviewed draft, send-as, HTML reply and forward in the thread, voting, receipts, scheduled send.
 - **Organize**: move, copy, delete, bulk actions, read state, flags, importance, sensitivity, categories, folders and rules.
 - **Account**: accounts and stores, out-of-office, junk lists, signatures, reminders, save-as, print, `.msg` import.
@@ -66,7 +66,7 @@ Each module has its own SKILL.md with full parameter tables and examples. **Load
 
 - **Event kinds** in every list, week and finder result: `meeting` (others invited, including a 1:1 the user organizes), `hold` (no one else invited: the user's own placeholder, which may be booked over), `firm` (no one else invited but a commitment that is never booked over: classes, office hours, exams, travel, Out of Office, private events) and `allday`.
 - **Week overview**: `outlook-calendar-week.ps1` shows per day the meetings, holds, firm events, all-day events, conflicts and the day's tier.
-- **Find a time**: `outlook-calendar-free.ps1` finds slots for the user alone or with attendees, ranked by tier (open day, holds-only day, one-meeting day, busy day) with a daily cap of 2 meetings, and never answers "no time". `-Propose` prints the best options as email-ready lines (or Outlook-native HTML); `-TimeZone` shows times in another zone.
+- **Find a time**: `outlook-calendar-free.ps1` finds slots for the user alone or with attendees, ranked by tier (open day, holds-only day, one-meeting day, busy day) with a daily cap of 2 meetings, and never answers "no time". `-Propose` prints the best options as email-ready lines (or Outlook-native HTML); `-TimeZone` shows times in another zone. `-Tier`, `-IncludeBusy`, `-Spread`, `-Prefer Morning|Afternoon` and `-SkipDays` steer which days and times are offered.
 - **Hold to invite**: `outlook-calendar-hold-to-invite.ps1` turns a hold into a meeting with attendees (previews until `-Confirm`).
 - **Meeting prep**: `outlook-calendar-prep.ps1 -Next` (or `-EntryID`) is a read-only brief: join link and agenda from the invite, each attendee's title and department, how much mail the user exchanged with each, and related mail by subject (subjects and dates only, never bodies).
 - **Cancel with notice**: `outlook-calendar-cancel.ps1` cancels a meeting the user organizes and notifies every attendee, with an optional message; it previews until `-Confirm`.
@@ -106,7 +106,7 @@ Each module has its own SKILL.md with full parameter tables and examples. **Load
 
 ### Email — [outlook-mail/SKILL.md](../outlook-mail/SKILL.md)
 
-All 54 mail scripts, with their key parameters, are in the **"Which script when"** table in [outlook-mail/SKILL.md](../outlook-mail/SKILL.md). Start with `outlook-triage.ps1` (what needs attention), `outlook-priority.ps1` (mail ranked by Copilot priority), `outlook-smart-reply.ps1` (Copilot's suggested replies), `outlook-find.ps1` (EntryIDs), `outlook-read-body.ps1` / `outlook-conversation.ps1` (read), `outlook-reply.ps1` / `outlook-draft.ps1` (compose as draft), `outlook-send-draft.ps1 -Confirm` (send after approval).
+All 56 mail scripts, with their key parameters, are in the **"Which script when"** table in [outlook-mail/SKILL.md](../outlook-mail/SKILL.md). Start with `outlook-triage.ps1` (what needs attention), `outlook-priority.ps1` (mail ranked by Copilot priority), `outlook-smart-reply.ps1` (Copilot's suggested replies), `outlook-find.ps1` (EntryIDs), `outlook-read-body.ps1` / `outlook-conversation.ps1` (read), `outlook-reply.ps1` / `outlook-draft.ps1` (compose as draft), `outlook-send-draft.ps1 -Confirm` (send after approval).
 
 ### Calendar — [outlook-calendar/SKILL.md](../outlook-calendar/SKILL.md)
 

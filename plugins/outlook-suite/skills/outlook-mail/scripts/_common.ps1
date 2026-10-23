@@ -79,9 +79,12 @@ function Stop-WithError {
 }
 
 # Writes an object as compact JSON to stdout (used when a script gets -Json).
+# Non-ASCII characters are written as \uXXXX, so the JSON survives any console code page
+# (a hidden or OEM console turns a curly quote into a plain " and breaks the document).
 function Write-Json {
     param($InputObject, [int]$Depth = 8)
-    Write-Output ($InputObject | ConvertTo-Json -Depth $Depth -Compress)
+    $json = $InputObject | ConvertTo-Json -Depth $Depth -Compress
+    Write-Output ([regex]::Replace($json, '[^\x00-\x7F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value }))
 }
 
 # Binary MAPI id (EntryID, ConversationID) as the hex string Outlook uses.
