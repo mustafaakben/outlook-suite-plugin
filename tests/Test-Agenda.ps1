@@ -91,7 +91,8 @@ try {
     Check "meetings match an attendee-based count ($mtg)" ($c.Meetings -eq $mtg) "agenda=$($c.Meetings)"
     Check "holds + firm listed = no-attendee events ($own)" ((@($d0.Holds).Count + @($d0.Firm).Count) -eq $own) "holds=$(@($d0.Holds).Count) firm=$(@($d0.Firm).Count)"
     Check "all-day count ($all)" ($c.AllDay -eq $all)
-    Check "day has a tier and per-day counts" ($d0.Tier -and $null -ne $d0.Counts.Meetings -and $null -ne $d0.Counts.Firm)    $l = $null
+    Check "day has a tier and per-day counts" ($d0.Tier -and $null -ne $d0.Counts.Meetings -and $null -ne $d0.Counts.Firm)
+    $l = $null
     foreach ($try in 1..2) { $lr = Run "outlook-tasks-list.ps1" @("-Due", "Overdue", "-Json"); try { $l = $lr.Out | ConvertFrom-Json; break } catch { Start-Sleep -Seconds 1 } }
     Check "overdue tasks match tasks-list ($($l.total))" ($l -and $c.TasksOverdue -eq $l.total) "exit=$($lr.Exit)"
     $lf = (Run "outlook-tasks-list.ps1" @("-Flagged", "-Due", "Overdue", "-Limit", "5000", "-Json")).Out | ConvertFrom-Json
