@@ -34,7 +34,7 @@ Firm subjects are regex patterns (case-sensitive; prefix `(?i)` to ignore case).
 
 | Need | Script | Key parameters |
 |---|---|---|
-| Find a meeting time | `outlook-calendar-free.ps1` | `-Attendees "Jane Doe; john.doe@example.org" -Duration 30 -From -To \| -Days 7 -WorkStart 9 -WorkEnd "5 PM" -Step 30 -Buffer 0 -MaxPerDay 2 -PerDay 2 -Top 12 -IncludeWeekends -FirmHolds -TimeZone -Json` |
+| Find a meeting time | `outlook-calendar-free.ps1` | `-Attendees "Jane Doe; john.doe@example.org" -Duration 30 -From -To \| -Days 7 -WorkStart 9 -WorkEnd "5 PM" -Step 30 -Buffer 0 -MaxPerDay 2 -PerDay 2 -Top 12 -IncludeWeekends -FirmHolds -TimeZone -Tier "1,3" -IncludeBusy -Spread -Prefer Morning\|Afternoon -SkipDays "Fri" -Json` |
 | Email-ready time options | `outlook-calendar-free.ps1 -Propose` | `-Count 3 [-Html] [-TimeZone Pacific] [-Json]` plus the finder's parameters |
 | What does the week look like | `outlook-calendar-week.ps1` | `-From <date> \| -Next -Weeks 1 -MaxPerDay 2 -IncludeWeekends -Detail -FirmHolds -Json` |
 | List events | `outlook-calendar-list.ps1` | `-Days 7 \| -Past \| -From -To, -Kind meeting\|hold\|firm\|allday -ConflictsOnly -FirmHolds -TimeZone -Limit 20 -Json` |
@@ -68,6 +68,18 @@ The scheduling rule, built in:
 
 **`-Propose`** prints the best `-Count` slots (default 3, best tier first, different days first) as email-ready lines in a plain email style, e.g. `Mon, Oct 26, 10:30 to 11:30 a.m.` (always "to", never a dash). `-Html` prints the same as one Outlook-native block (`<div>` in Aptos 11pt black, `class="elementToProof"`, a `<ul>` of slots) to paste into a draft's HTML. `-Json` returns the slots with `Text`, plus `Html`.
 
+**Steering the choice** (all optional; the default is the rule above):
+
+| Flag | Effect |
+|---|---|
+| `-Tier 2` or `-Tier "1,3"` | Only days of these tiers; other days are listed as skipped with their tier. `-Tier 4` means busy days only. |
+| `-IncludeBusy` | Busy days are offered too, after the better tiers, even when those have room. |
+| `-Spread` | Mixes tiers instead of filling from the top, so a lower tier is not crowded out by `-Top`. With `-Propose`, the first picks are the best slot of each tier, so the user sees the trade-off. |
+| `-Prefer Morning\|Afternoon` | Within each day, slots in that half of the day come first. Hours are still bounded by `-WorkStart`/`-WorkEnd`. |
+| `-SkipDays "Fri","2026-11-03"` | Leaves out weekdays (3+ letters) or dates; listed as skipped. |
+
+JSON adds `Tiers` (the tiers offered) and `Prefer`.
+
 **`-TimeZone`** (list, free, propose) changes only how times are SHOWN: `Eastern`, `Central`, `Mountain`, `Pacific`, `UTC`, a Windows id (`Pacific Standard Time`) or an IANA name (`America/Los_Angeles`). Text lines carry the zone name; JSON adds `StartShown`/`EndShown` with that zone's offset next to the original `Start`/`End`.
 
 Present the result to the user grouped under the tier names, then book with `outlook-calendar-create.ps1` (a hold) or, with attendees, after they pick a slot, with `-Confirm`.
@@ -75,6 +87,7 @@ Present the result to the user grouped under the tier names, then book with `out
 ```powershell
 & "./scripts/outlook-calendar-free.ps1" -Attendees "Jane Doe; john@example.com" -Duration 60
 & "./scripts/outlook-calendar-free.ps1" -From "2026-11-02" -To "2026-11-06" -Duration 45 -Buffer 15
+& "./scripts/outlook-calendar-free.ps1" -Propose -Spread -Count 4 -Prefer Afternoon -SkipDays "Fri"
 & "./scripts/outlook-calendar-week.ps1" -Next -Detail
 ```
 

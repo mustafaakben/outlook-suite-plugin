@@ -14,6 +14,12 @@ param(
     [int]$Top = 12,
     [switch]$IncludeWeekends,
     [string[]]$FirmHolds,
+    [string[]]$Tier,
+    [switch]$IncludeBusy,
+    [switch]$Spread,
+    [ValidateSet("Morning", "Afternoon")]
+    [string]$Prefer = "",
+    [string[]]$SkipDays,
     [switch]$Propose,
     [int]$Count = 3,
     [switch]$Html,
@@ -43,6 +49,9 @@ param(
 # Email-ready options: .\outlook-calendar-free.ps1 -Attendees "Jane Doe" -Propose            # 3 lines
 #                      .\outlook-calendar-free.ps1 -Propose -Count 4 -Html                   # <div><ul> for a draft
 # Another time zone (display only): .\outlook-calendar-free.ps1 -Propose -TimeZone Pacific
+# Choose tiers: -Tier 2 (holds-only days only), -Tier 1,3, -IncludeBusy (busy days even when better ones exist)
+# One per tier: -Propose -Spread (best slot from each tier, so the trade-off is visible)
+# Time of day and days: -Prefer Afternoon, -SkipDays "Fri","2026-11-03"
 # JSON: add -Json
 
 . (Join-Path $PSScriptRoot "_common.ps1")
@@ -64,6 +73,19 @@ try {
         $notes.Add("Days before today were skipped.")
         $first = $now.Date
     }
+    # -SkipDays: weekday names (Fri, Friday) or dates; anything else is an error, not a silent no-op.
+    $skipNames = @(); $skipDates = @()
+    foreach ($s in @($SkipDays | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        $dayName = [Enum]::GetNames([DayOfWeek]) | Where-Object { $_ -like "$s*" -and $s.Length -ge 3 } | Select-Object -First 1
+        $date = [datetime]::MinValue
+        if ($dayName) { $skipNames += $dayName }
+        elseif ([datetime]::TryParse($s, [ref]$date)) { $skipDates += $date.Date }
+        else { throw "-SkipDays: '$s' is not a weekday name or a date." }
+    }
+    # -Tier "1,3" arrives as one string through -File and the warm host, so split it here.
+    $tiers = @($Tier | ForEach-Object { $_ -split '[,;\s]+' } | Where-Object { $_ } | ForEach-Object {
+            if ($_ -notmatch '^[1-4]$') { throw "-Tier: '$_' is not 1, 2, 3 or 4." }; [int]$_ } | Sort-Object -Unique)
+    $wantBusy = $IncludeBusy -or ($tiers -contains 4)
     if (($last - $first).TotalDays -gt 27) { throw "Search at most 4 weeks at a time (Exchange free/busy covers about 29 days)." }
     $limit = $first.AddDays(27)
 
@@ -106,6 +128,8 @@ try {
             if (-not $inRange) { continue }
             if ($weekend -and -not $IncludeWeekends) { continue }
             if ($info.Away) { $script:skipped.Add([ordered]@{ Date = $d; Reason = "away (all-day: $($info.AllDay -join '; '))" }); continue }
+            if ($skipNames -contains [string]$d.DayOfWeek -or $skipDates -contains $d) { $script:skipped.Add([ordered]@{ Date = $d; Reason = "left out by -SkipDays" }); continue }
+            if ($tiers.Count -and $tiers -notcontains $info.Tier) { $script:skipped.Add([ordered]@{ Date = $d; Reason = "$($info.TierName) (not in -Tier $($tiers -join ','))" }); continue }
 
             $winStart = $d.Add($ws); $winEnd = $d.Add($we)
             if ($d -eq $now.Date) {
@@ -137,9 +161,9 @@ try {
                 $cands.Add([ordered]@{ Start = $t; End = $e; Tier = $info.Tier; TierName = $info.TierName; OverHold = $over; Tentative = $tentative; NotChecked = $unchecked })
             }
             if ($cands.Count -eq 0) { $script:skipped.Add([ordered]@{ Date = $d; Reason = "no room: meetings and firm events fill $($ws.ToString('hh\:mm')) to $($we.ToString('hh\:mm'))$(if ($people.Count) { ' (or attendees are busy)' })" }); continue }
-            # Best few per day: fewest holds covered and tentative people first, then earliest.
-            # First pass keeps picks at least 2 hours apart (real choices, not back-to-back slots).
-            $ranked = @($cands | Sort-Object { $_.OverHold.Count }, { $_.Tentative.Count }, { $_.Start })
+            # Best few per day: fewest holds covered and tentative people first, then the -Prefer
+            # half of the day, then earliest. First pass keeps picks at least 2 hours apart.
+            $ranked = @($cands | Sort-Object { $_.OverHold.Count }, { $_.Tentative.Count }, { if ($Prefer -eq "Morning") { $_.Start.Hour -ge 12 } elseif ($Prefer -eq "Afternoon") { $_.Start.Hour -lt 12 } else { $false } }, { $_.Start })
             $picked = @()
             foreach ($gap in 120, 0) {
                 foreach ($c in $ranked) {
@@ -163,23 +187,35 @@ try {
         $slots = & $search $first $last
     }
 
-    # Fill from the best tier down; busy days only when nothing better exists.
-    $offer = @($slots | Where-Object { $_.Tier -le 3 } | Sort-Object { $_.Tier }, { $_.Start })
+    # Fill from the best tier down; busy days only when nothing better exists (or -IncludeBusy / -Tier 4).
+    $offer = @($slots | Where-Object { $wantBusy -or $_.Tier -le 3 } | Sort-Object { $_.Tier }, { $_.Start })
     $busyOnly = $false
     if ($offer.Count -eq 0) { $offer = @($slots | Sort-Object { $_.Start }); $busyOnly = ($offer.Count -gt 0) }
+    if ($Spread) {
+        # Round-robin across tiers so a lower tier is not crowded out by -Top.
+        $queues = @($offer | Group-Object { $_.Tier } | Sort-Object { [int]$_.Name } | ForEach-Object { , [System.Collections.Generic.Queue[object]]::new([object[]]$_.Group) })
+        $mixed = @()
+        while ($mixed.Count -lt $Top -and @($queues | Where-Object { $_.Count }).Count) {
+            foreach ($q in $queues) { if ($q.Count -and $mixed.Count -lt $Top) { $mixed += $q.Dequeue() } }
+        }
+        $offer = @($mixed | Sort-Object { $_.Tier }, { $_.Start })
+    }
     $offer = @($offer | Select-Object -First $Top)
 
     # -Propose: the top -Count slots, best tier first, one per day before doubling up.
+    # With -Spread, the first pass takes the best slot of each tier.
     $proposals = @()
     if ($Propose) {
-        $byDay = @{}
-        foreach ($pass in 1, 2) {
+        $byDay = @{}; $byTier = @{}
+        $passes = if ($Spread) { 0, 1, 2 } else { 1, 2 }
+        foreach ($pass in $passes) {
             foreach ($s in $offer) {
                 if ($proposals.Count -ge $Count) { break }
                 $k = $s.Start.Date
                 if ($proposals -contains $s) { continue }
-                if ($pass -eq 1 -and $byDay.ContainsKey($k)) { continue }
-                $proposals += $s; $byDay[$k] = 1
+                if ($pass -eq 0 -and $byTier.ContainsKey($s.Tier)) { continue }
+                if ($pass -le 1 -and $byDay.ContainsKey($k)) { continue }
+                $proposals += $s; $byDay[$k] = 1; $byTier[$s.Tier] = 1
             }
         }
         $proposals = @($proposals | Sort-Object { $_.Tier }, { $_.Start })
@@ -197,6 +233,8 @@ try {
     if ($Json) {
         $o = [ordered]@{ From = Format-MailDateIso $first; To = Format-MailDateIso $last.AddDays(1); Duration = $Duration }
         $o.WorkHours = "$($ws.ToString('hh\:mm'))-$($we.ToString('hh\:mm'))"; $o.MaxPerDay = $MaxPerDay; $o.BusyDaysOnly = $busyOnly
+        $o.Tiers = if ($tiers.Count) { $tiers } elseif ($wantBusy) { @(1, 2, 3, 4) } else { @(1, 2, 3) }
+        if ($Prefer) { $o.Prefer = $Prefer }
         if ($script:DisplayTz) { $o.TimeZoneShown = $script:DisplayTz.Id }
         $o.NotChecked = $notChecked
         $o.Notes = $notes.ToArray()
@@ -223,7 +261,7 @@ try {
     $who = "just you"
     if ($people.Count) { $who = "you + " + (($people | ForEach-Object { $_.Label }) -join ", ") }
     Write-Host "`n=== FREE TIME: $Duration min, $who ===" -ForegroundColor Cyan
-    Write-Host "$rangeText, $hoursText$(if ($Buffer) { ", $Buffer min buffer" }), max $MaxPerDay meetings a day$(if ($script:DisplayTzLabel) { ", times shown in $script:DisplayTzLabel" })" -ForegroundColor Gray
+    Write-Host "$rangeText, $hoursText$(if ($Buffer) { ", $Buffer min buffer" }), max $MaxPerDay meetings a day$(if ($tiers.Count) { ", tiers $($tiers -join ',') only" } elseif ($wantBusy) { ", busy days included" })$(if ($Prefer) { ", $($Prefer.ToLower())s preferred" })$(if ($script:DisplayTzLabel) { ", times shown in $script:DisplayTzLabel" })" -ForegroundColor Gray
     if ($notChecked.Count) { Write-Host "NOT CHECKED: $($notChecked -join ', ') (their calendars were not read; slots may clash for them)" -ForegroundColor Yellow }
     foreach ($p in $people) { if ($p.Note) { Write-Host "  ! $($p.Input): $($p.Note)" -ForegroundColor Yellow } }
     foreach ($n in $notes) { Write-Host "  $n" -ForegroundColor Yellow }

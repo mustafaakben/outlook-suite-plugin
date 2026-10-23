@@ -2,6 +2,22 @@
 
 All notable changes to the Outlook Suite plugin. Versions follow [Semantic Versioning](https://semver.org/). The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.1.0] - 2026-10-23
+
+Search everything, read attachments, and steer free-time results. The suite now has 94 scripts (mail 56).
+
+### Added
+- Mail: `outlook-everything.ps1`, one full-text search across mail, calendar, contacts, tasks, notes and local files through the Windows Search index, usually in 1 to 3 s (under 1 s through the warm host). Each kind is searched separately (`-Top` each); Outlook hits come back with a real EntryID; `-Kind`, `-Days`, `-From` (mail), `-Path` (files), `-NoResolve`, `-Json`.
+- Mail: `outlook-attachment-read.ps1` returns the text of an email's attachments or of a local file (`-FilePath`): `.docx`, `.xlsx` and `.pptx` straight from their XML without starting Office; `.pdf`, `.doc` and `.rtf` through Word, `.xls` through Excel and `.ppt` through PowerPoint (hidden, read-only, macros forced off); attached `.msg` emails through Outlook; text and HTML directly. `-MaxChars`, `-MaxRows`, `-AttachmentIndex`, `-TimeoutSec`, `-Json`.
+- Calendar: `outlook-calendar-free.ps1` gains `-Tier "1,3"` (only those tiers), `-IncludeBusy` (busy days too), `-Spread` (mix tiers; with `-Propose` the best slot of each tier first), `-Prefer Morning|Afternoon` and `-SkipDays "Fri","2026-11-03"`. Defaults are unchanged; JSON adds `Tiers` and `Prefer`.
+- Tests: `Test-FindAndRead.ps1` (fixtures built with Word, Excel and PowerPoint, read from disk and from a sandbox draft that is never addressed; read-only index search); `Test-CalendarFree.ps1` covers the new flags.
+
+### Fixed
+- `-Json` output of every script now escapes non-ASCII characters as `\uXXXX`. Under a hidden or OEM-code-page console (an MCP tunnel, a scheduled task), a curly quote in a subject was printed as a plain `"` and broke the JSON.
+
+### Security
+- Office files are always read from a private temp copy that is deleted afterwards, so the original is never locked. Word, Excel and PowerPoint run hidden and read-only with macros disabled, and get a dummy password, so a protected file fails instead of prompting. Each Office read has a watchdog (`-TimeoutSec`, default 90) that ends only the Office process the script started. An Office app that was already running is never quit. Word's PDF conversion prompt is switched off for the duration of one open and the user's setting is restored.
+
 ## [3.0.0] - 2026-10-22
 
 Calendar, people and contacts, tasks and notes are brought to the mail standard and extended for daily productivity. The suite now has 92 scripts: mail 54, calendar 15, contacts 10, tasks 9, notes 4.
@@ -116,6 +132,7 @@ The mail skill rebuilt to be fast and agent-friendly. It now has 51 scripts, 16 
 - The first plugin marketplace release, with mail, calendar, contacts, tasks and notes skills driving classic Outlook through PowerShell COM.
 - `-StripLinks` on read-body, to keep long URLs out of agent context (2026-02-18).
 
+[3.1.0]: https://github.com/mustafaakben/outlook-suite-plugin/pull/8
 [3.0.0]: https://github.com/mustafaakben/outlook-suite-plugin/pull/6
 [2.2.1]: https://github.com/mustafaakben/outlook-suite-plugin/pull/4
 [2.2.0]: https://github.com/mustafaakben/outlook-suite-plugin/pull/3
