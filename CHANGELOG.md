@@ -2,6 +2,15 @@
 
 All notable changes to the Outlook Suite plugin. Versions follow [Semantic Versioning](https://semver.org/). The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.2.1] - 2026-11-02
+
+### Added
+- Mail: `outlook-triage.ps1 all`, a fourth view: every email of the last 3 days with no read, tag or reply filter, so one call can ask for "mail not handled yet, whatever other tags it has" (`all -ExcludeCategory "@Done"`). The other views each force a tag or reply filter that no option can clear.
+- Docs: the triage description (also the MCP tool description) and SKILL.md say how to process each email exactly once: tag handled mail and query `all -ExcludeCategory`, never unread, because opening an email anywhere marks it read and the scan would skip it.
+
+### Changed
+- Tests: `Test-MailTriage.ps1` compares sets of emails instead of counts and reports a warning, not a failure, when every difference is an email whose read state Outlook's table and the item disagree on (cache lag after mail is read elsewhere; checked against Graph, the table was right) or an email that arrived during the test. It also checks the `all` view against the item-by-item read and across the warm host and Windows PowerShell 5.1.
+
 ## [3.2.0] - 2026-11-02
 
 Triage feeds a whole inbox pipeline on its own: web links, Message-IDs, tag exclusion and bodies in one call, with no Microsoft Graph lookup. The suite still has 94 scripts.

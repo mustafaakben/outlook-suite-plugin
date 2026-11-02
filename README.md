@@ -97,6 +97,7 @@ cd plugins/outlook-suite/skills/outlook-mail
 # Every row carries a Message-ID and a WebLink (Outlook on the web); skip tags already handled,
 # read the bodies of a batch in one call, and find an email again by Message-ID after it moved
 & ".\scripts\outlook-triage.ps1" tagged -All -Days 7 -ExcludeCategory "@Done,@NoAction" -Json
+& ".\scripts\outlook-triage.ps1" all -Days 3 -ExcludeCategory "@Done,@NoAction" -Json   # everything not yet handled, read or not
 & ".\scripts\outlook-triage.ps1" untagged -IncludeBody -BodyChars 2000 -Limit 20 -Json
 & ".\scripts\outlook-read-body.ps1" -MessageID "<abc123@example.com>" -Json
 & ".\scripts\outlook-priority.ps1" -Days 1 -Unread -Why

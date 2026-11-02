@@ -1,6 +1,6 @@
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("untagged", "tagged", "reply")]
+    [ValidateSet("untagged", "tagged", "reply", "all")]
     [string]$View = "untagged",
     [int]$Days = -1,                 # -1 = the view's default (untagged/tagged 3, reply 7)
     [datetime]$DateFrom,
@@ -30,6 +30,11 @@ param(
 #   untagged  (default) unread mail with no category, last 3 days: what nobody has sorted yet
 #   tagged    mail with a category, last 3 days, read and unread, grouped by its tags
 #   reply     mail you have not replied to, last 7 days, any tag or none, oldest first
+#   all       every email of the last 3 days: read or unread, tagged or not, replied or not
+#             (narrow it with any filter, e.g. -ExcludeCategory "@Done")
+# To process each email exactly once, do not use unread as "not processed yet": opening an email
+# anywhere marks it read, so it would be skipped. Tag the mail you have handled and ask for
+# all -ExcludeCategory "<handled tags>", with -Days covering the time since the last run.
 # Every filter works with every view and overrides the view's default.
 # Each row: date, sender, exact subject, tags, unread, replied, Copilot priority and
 # headline, whether you are in To or only CC, recipient count, flag due date, EntryID,
@@ -43,6 +48,7 @@ param(
 # Usage: .\outlook-triage.ps1 tagged -Category "@Action,@Review" -Unread
 # Usage: .\outlook-triage.ps1 reply -Category "!Urgent,@Action" -Priority High -Json
 # Usage: .\outlook-triage.ps1 tagged -All -Days 7 -ExcludeCategory "@Done,@NoAction"
+# Usage: .\outlook-triage.ps1 all -Days 3 -ExcludeCategory "@Done,@NoAction" -IncludeBody -Json
 # Usage: .\outlook-triage.ps1 untagged -IncludeBody -BodyChars 2000 -Limit 20 -Json
 # Usage: .\outlook-triage.ps1 tagged -All -Folder "Inbox/Projects"
 # Usage: .\outlook-triage.ps1 reply -Priority High -Copilot
@@ -87,6 +93,7 @@ try {
         "untagged" { $defaultDays = 3; $readState = "unread"; $tagState = "untagged" }
         "tagged" { $defaultDays = 3; $tagState = "tagged" }
         "reply" { $defaultDays = 7; $replyState = "notreplied"; $sortBy = "Oldest" }
+        "all" { $defaultDays = 3 }
     }
     if ($All) { $readState = "" }
     if ($Unread) { $readState = "unread" }
