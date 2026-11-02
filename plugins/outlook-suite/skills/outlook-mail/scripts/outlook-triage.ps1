@@ -9,6 +9,7 @@ param(
     [switch]$Unread,
     [switch]$Read,
     [string]$Category = "",          # "@Action,@Review": any of these tags
+    [string]$ExcludeCategory = "",   # "@Done,@NoAction": drop mail with any of these tags
     [switch]$Untagged,
     [switch]$NotReplied,
     [switch]$Replied,
@@ -20,6 +21,8 @@ param(
     [string]$Sort = "",
     [int]$Limit = 100,
     [switch]$Copilot,                # add Copilot's reason and suggested replies (read per email shown)
+    [switch]$IncludeBody,            # add each shown email's text (read per email shown)
+    [int]$BodyChars = 4000,          # with -IncludeBody: cut each body after this many characters; 0 = no cap
     [switch]$Json
 )
 
@@ -29,13 +32,18 @@ param(
 #   reply     mail you have not replied to, last 7 days, any tag or none, oldest first
 # Every filter works with every view and overrides the view's default.
 # Each row: date, sender, exact subject, tags, unread, replied, Copilot priority and
-# headline, whether you are in To or only CC, recipient count, flag due date, EntryID.
+# headline, whether you are in To or only CC, recipient count, flag due date, EntryID,
+# Message-ID and WebLink (opens the email in Outlook on the web; empty for non-Exchange mail).
+# -ExcludeCategory drops mail that has any of the given tags (the untagged view has none anyway).
+# -IncludeBody adds each shown email's text, links as [URL-001], cut at -BodyChars (default 4000).
 # -Copilot adds Copilot's reason for the priority and its suggested replies (slower: per email).
 #
 # Usage: .\outlook-triage.ps1
 # Usage: .\outlook-triage.ps1 untagged -Days 7 -All
 # Usage: .\outlook-triage.ps1 tagged -Category "@Action,@Review" -Unread
 # Usage: .\outlook-triage.ps1 reply -Category "!Urgent,@Action" -Priority High -Json
+# Usage: .\outlook-triage.ps1 tagged -All -Days 7 -ExcludeCategory "@Done,@NoAction"
+# Usage: .\outlook-triage.ps1 untagged -IncludeBody -BodyChars 2000 -Limit 20 -Json
 # Usage: .\outlook-triage.ps1 tagged -All -Folder "Inbox/Projects"
 # Usage: .\outlook-triage.ps1 reply -Priority High -Copilot
 
@@ -50,6 +58,17 @@ $VerbNames = @{ 102 = "replied"; 103 = "replied all"; 104 = "forwarded" }
 
 function Split-List([string]$s) { return @($s -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
 
+# Body text for a batch: links as [URL-00N] (the same numbers outlook-read-body and outlook-links
+# use), invisible padding and runs of blank lines removed, cut at $Max characters (0 = no cap).
+function Format-TriageBody([string]$Text, [int]$Max) {
+    $t = (Format-MailLinks -Text $Text -Mode domain).Text
+    $t = ($t -replace $script:InvisibleChars, '' -replace '\r\n?', "`n" -replace '[^\S\n]+\n', "`n" -replace '\n{3,}', "`n`n").Trim()
+    if ($Max -gt 0 -and $t.Length -gt $Max) {
+        return @{ Text = $t.Substring(0, $Max) + "`n[... cut at $Max of $($t.Length) characters; full text: outlook-read-body.ps1 -EntryID <EntryID>]"; Truncated = $true }
+    }
+    return @{ Text = $t; Truncated = $false }
+}
+
 try {
     if ($Unread -and $Read) { throw "-Unread and -Read cannot be used together." }
     if ($Replied -and $NotReplied) { throw "-Replied and -NotReplied cannot be used together." }
@@ -57,6 +76,10 @@ try {
     $wantPriority = @(Split-List $Priority)
     foreach ($p in $wantPriority) { if ($p -notin "High", "Normal", "Low") { throw "-Priority takes High, Normal or Low (got '$p')." } }
     $wantTags = @(Split-List $Category)
+    $skipTags = @(Split-List $ExcludeCategory)
+    $both = @($wantTags | Where-Object { $_ -in $skipTags })
+    if ($both.Count -gt 0) { throw "-Category and -ExcludeCategory both name '$($both -join "', '")'." }
+    if ($BodyChars -lt 0) { throw "-BodyChars takes 0 (no cap) or a positive number of characters." }
 
     # View defaults; any filter given on the command line wins.
     $readState = ""; $tagState = ""; $replyState = ""; $sortBy = "Newest"
@@ -107,7 +130,7 @@ try {
     $cols = @($script:Prop.LongTermEntryID, "Subject", "SenderName", $script:Prop.SenderSmtp, "ReceivedTime",
         $script:Prop.MessageFlags, "urn:schemas:httpmail:displayto", "urn:schemas:httpmail:displaycc", "Categories",
         $script:Prop.FlagStatus, $FlagDue, $LastVerb, $script:CopilotProp.Score, $script:Prop.ConversationID, $script:Prop.Preview,
-        $ToMe, $CcMe, $script:CopilotProp.Headline)
+        $ToMe, $CcMe, $script:CopilotProp.Headline, $script:Prop.MessageID)
     foreach ($c in $cols) { [void]$table.Columns.Add($c) }
     $table.Sort("ReceivedTime", $true)
     $rowCount = $table.GetRowCount()
@@ -120,6 +143,8 @@ try {
     for ($i = 0; $i -lt $rowCount; $i++) {
         $tags = @(Split-List ([string]$rows[$i, 8]))
         if ($tagState -eq "tags" -and -not ($tags | Where-Object { $_ -in $wantTags })) { continue }
+        # Exclusions are checked here, not in the query: a DASL NOT LIKE would also drop untagged mail.
+        if ($skipTags.Count -gt 0 -and ($tags | Where-Object { $_ -in $skipTags })) { continue }
         $verb = $rows[$i, 11]; $verb = if ($null -ne $verb) { [int]$verb } else { 0 }
         $isReplied = $verb -in 102, 103
         if ($replyState -eq "notreplied" -and $isReplied) { continue }
@@ -141,6 +166,8 @@ try {
         $rec = [ordered]@{
             EntryID         = $(if ($eid -is [byte[]]) { ConvertTo-HexId $eid } else { "" })
             ConversationID  = $(if ($conv -is [byte[]]) { ConvertTo-HexId $conv } else { "" })
+            MessageID       = [string]$rows[$i, 18]
+            WebLink         = ""                      # built below, only for the rows shown
             Date            = $date
             From            = $(if ($smtp -and $smtp -ne $name) { "$name <$smtp>" } else { $name })
             Subject         = [string]$rows[$i, 1]
@@ -172,15 +199,27 @@ try {
         $records = @($records | Group-Object { $_.Categories -join ", " } | Sort-Object Name | ForEach-Object { $_.Group })
     }
     $shown = @($records | Select-Object -First $Limit)
-    foreach ($r in $shown) { $r.Preview = Format-Preview $r.Preview 160 }
-    if ($Copilot) {
-        # Reason and suggested replies are not table columns: read them per email shown.
+    foreach ($r in $shown) {
+        $r.Preview = Format-Preview $r.Preview 160
+        $r.WebLink = Get-MailWebLink -Namespace $Namespace -EntryID $r.EntryID -StoreID $target.StoreID
+        # Table text columns stop at 255 characters (long Message-IDs, e.g. Teams notices): read the item.
+        if ($r.MessageID.Length -ge 255) {
+            try { $r.MessageID = [string]$Namespace.GetItemFromID($r.EntryID, $target.StoreID).PropertyAccessor.GetProperty($script:Prop.MessageID) } catch { }
+        }
+    }
+    if ($Copilot -or $IncludeBody) {
+        # Copilot's reason, suggested replies and the body are not table columns: one read per email shown.
         foreach ($r in $shown) {
-            $r.CopilotReason = ""; $r.SmartReplies = @()
-            try {
-                $ci = Get-CopilotInsight ($Namespace.GetItemFromID($r.EntryID, $target.StoreID))
-                $r.CopilotReason = $ci.Reason; $r.SmartReplies = @($ci.SmartReplies)
-            } catch { }
+            if ($Copilot) { $r.CopilotReason = ""; $r.SmartReplies = @() }
+            if ($IncludeBody) { $r.Body = ""; $r.BodyTruncated = $false }
+            $item = $null
+            try { $item = $Namespace.GetItemFromID($r.EntryID, $target.StoreID) } catch { continue }
+            if ($Copilot) {
+                try { $ci = Get-CopilotInsight $item; $r.CopilotReason = $ci.Reason; $r.SmartReplies = @($ci.SmartReplies) } catch { }
+            }
+            if ($IncludeBody) {
+                try { $b = Format-TriageBody ([string]$item.Body) $BodyChars; $r.Body = $b.Text; $r.BodyTruncated = $b.Truncated } catch { }
+            }
         }
     }
 
@@ -189,6 +228,7 @@ try {
     if ($until) { $filters += "until $(Format-MailDate $until)" }
     $filters += switch ($readState) { "unread" { "unread" } "read" { "read" } default { "read and unread" } }
     $filters += switch ($tagState) { "untagged" { "no tag" } "tagged" { "any tag" } "tags" { "tag: $($wantTags -join ' or ')" } default { "tagged or not" } }
+    if ($skipTags.Count -gt 0) { $filters += "without tag: $($skipTags -join ', ')" }
     if ($replyState) { $filters += $(if ($replyState -eq "replied") { "replied" } else { "not replied" }) }
     if ($wantPriority.Count) { $filters += "Copilot priority: $($wantPriority -join ' or ')" }
     if ($From) { $filters += "from: '$From'" }
@@ -236,8 +276,14 @@ try {
         if ($r.Contains("SmartReplies") -and $r.SmartReplies.Count) {
             $k = 0; Write-Host ("  Suggested replies: " + (($r.SmartReplies | ForEach-Object { $k++; "$k) $_" }) -join "  ")) -ForegroundColor Magenta
         }
-        if ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
+        if ($r.Contains("Body")) {
+            Write-Host "  Body:" -ForegroundColor Gray
+            Write-Host $r.Body
+            Write-Host "  --- end of body ---" -ForegroundColor DarkGray
+        } elseif ($r.Preview) { Write-Host "  Preview: $($r.Preview)" -ForegroundColor Gray }
         Write-Host "  EntryID: $($r.EntryID)" -ForegroundColor DarkGray
+        if ($r.MessageID) { Write-Host "  Message-ID: $($r.MessageID)" -ForegroundColor DarkGray }
+        if ($r.WebLink) { Write-Host "  WebLink: $($r.WebLink)" -ForegroundColor DarkGray }
         Write-Host ""
     }
     if ($n -eq 0) { Write-Host "Nothing matches. Try a larger -Days, -All, or fewer filters." -ForegroundColor Gray }

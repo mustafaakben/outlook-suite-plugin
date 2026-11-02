@@ -2,6 +2,24 @@
 
 All notable changes to the Outlook Suite plugin. Versions follow [Semantic Versioning](https://semver.org/). The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.2.0] - 2026-11-02
+
+Triage feeds a whole inbox pipeline on its own: web links, Message-IDs, tag exclusion and bodies in one call, with no Microsoft Graph lookup. The suite still has 94 scripts.
+
+### Added
+- Mail: every triage row, `outlook-read-body.ps1` and every single-item record (including `-Json` action results) carry `WebLink`, a link that opens the email in Outlook on the web, and `MessageID`, the Internet Message-ID. The link is the same URL Graph returns as `webLink`: the EntryID and the mailbox GUID (read from the account's MAPI/HTTP address) are packed into the Exchange item id locally. Checked byte for byte against Graph on 47 emails across the Inbox, Sent Items and a delegated mailbox, and opened in Outlook on the web for a Microsoft 365, a delegated and an Outlook.com mailbox. IMAP, POP and PST mail gets no link.
+- Mail: `outlook-triage.ps1 -ExcludeCategory "@A,@B"` drops mail that has any of those tags (exact match, checked per row, so untagged mail is never lost the way a query-side `NOT LIKE` would lose it). Naming the same tag in `-Category` and `-ExcludeCategory` is an error.
+- Mail: `outlook-triage.ps1 -IncludeBody` adds each shown email's text (`Body`, `BodyTruncated`), links as `[URL-001]` with the read-body numbering, invisible padding and blank-line runs removed, cut at `-BodyChars` (default 4000, `0` = no cap). Shares one item read per row with `-Copilot`.
+- Mail: `outlook-read-body.ps1 -MessageID "<id>"` finds an email in any mail folder of any mailbox and returns its current EntryID and WebLink. Moving an email changes its EntryID and WebLink but not its Message-ID, so a saved Message-ID always leads back to it.
+- Tests: `Test-MailTriage.ps1` checks the exclusion against item-by-item counts, every Message-ID against the item, every WebLink with an independent decoder, the body cap, read-body parity and the `-MessageID` lookup, and compares Message-IDs and WebLinks across direct, warm host and Windows PowerShell 5.1 runs. `Test-MailLinks.ps1` moves a sandbox draft and checks that the EntryID and WebLink change while `-MessageID` still finds it.
+
+### Fixed
+- Tasks: `SourceMessageID` was cut to 255 characters when read from the table (Teams notices have longer Message-IDs), so `outlook-tasks-from-mail.ps1` missed duplicates of those emails and `-Json` showed a shortened value. Long values are now read from the item. Triage's new `MessageID` does the same.
+- Calendar: `outlook-calendar-week.ps1` stopped with "You cannot call a method on a null-valued expression" on any week with a day of exactly one meeting (a single record was indexed as if it were a list).
+
+### Changed
+- Mail: list previews drop invisible padding characters (zero-width spaces and joiners, soft hyphens, the combining grapheme joiner) that newsletters use to fill the preview line.
+
 ## [3.1.0] - 2026-10-23
 
 Search everything, read attachments, and steer free-time results. The suite now has 94 scripts (mail 56).

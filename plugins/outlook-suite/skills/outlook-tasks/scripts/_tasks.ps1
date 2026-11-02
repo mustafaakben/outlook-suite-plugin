@@ -112,6 +112,10 @@ function Read-TaskTable {
             Reminder        = $(if ($rows[$i, 15]) { ConvertFrom-TableUtc $rows[$i, 16] } else { $null })
             SourceMessageID = [string]$rows[$i, 17]
         }
+        # Table text columns stop at 255 characters (long Message-IDs, e.g. Teams notices): read the item.
+        if ($rec.SourceMessageID.Length -ge 255) {
+            try { $rec.SourceMessageID = [string]$Folder.Session.GetItemFromID($eid, $Folder.StoreID).PropertyAccessor.GetProperty($script:TaskProp.SourceMessageID) } catch { }
+        }
         $List.Add($rec)   # not inline: Windows PowerShell 5.1 cannot parse a multi-line [ordered]@{} inside a method call
     }
 }

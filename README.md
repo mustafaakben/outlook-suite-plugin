@@ -94,6 +94,11 @@ cd plugins/outlook-suite/skills/outlook-mail
 # each with Copilot's priority; every filter is a parameter
 & ".\scripts\outlook-triage.ps1"
 & ".\scripts\outlook-triage.ps1" reply -Category "@Action,@Review" -Priority High -Days 10
+# Every row carries a Message-ID and a WebLink (Outlook on the web); skip tags already handled,
+# read the bodies of a batch in one call, and find an email again by Message-ID after it moved
+& ".\scripts\outlook-triage.ps1" tagged -All -Days 7 -ExcludeCategory "@Done,@NoAction" -Json
+& ".\scripts\outlook-triage.ps1" untagged -IncludeBody -BodyChars 2000 -Limit 20 -Json
+& ".\scripts\outlook-read-body.ps1" -MessageID "<abc123@example.com>" -Json
 & ".\scripts\outlook-priority.ps1" -Days 1 -Unread -Why
 & ".\scripts\outlook-smart-reply.ps1" -EntryID "00000000..." -Use 1
 
@@ -166,7 +171,7 @@ pwsh -File $call notes-list -Search "budget" -Json
 - Not intended for Outlook Web App (OWA)-only environments
 - Behavior can vary by account type, mailbox policy, and Exchange tenant config
 - Message recall is limited by Outlook/Exchange behavior and not guaranteed
-- `EntryID` is safest for targeting, but can change across certain mailbox move/import scenarios
+- `EntryID` is safest for targeting, but changes when an email moves to another folder (and so does its WebLink); keep the Message-ID and use `outlook-read-body.ps1 -MessageID` to find it again
 
 ## Review Status
 

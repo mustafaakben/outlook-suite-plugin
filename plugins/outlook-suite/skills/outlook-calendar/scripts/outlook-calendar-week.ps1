@@ -37,7 +37,7 @@ try {
         if ($weekend -and -not $IncludeWeekends -and $info.Events.Count -eq 0) { continue }
         $timed = @($info.Events | Where-Object { $_.Kind -eq "meeting" -and $_.Busy -ne "Free" } | Sort-Object { $_.Start })
         $info.FirstMeeting = $null; $info.LastMeetingEnd = $null
-        if ($timed.Count) { $info.FirstMeeting = $timed[0].Start; $info.LastMeetingEnd = ($timed | Sort-Object { $_.End })[-1].End }
+        if ($timed.Count) { $info.FirstMeeting = $timed[0].Start; $info.LastMeetingEnd = @($timed | Sort-Object { $_.End })[-1].End }   # @(): one meeting must stay an array
         $mins = 0; foreach ($m in $timed) { $mins += ($m.End - $m.Start).TotalMinutes }
         $info.MeetingHours = [Math]::Round($mins / 60, 1)
         $dayList.Add($info)
