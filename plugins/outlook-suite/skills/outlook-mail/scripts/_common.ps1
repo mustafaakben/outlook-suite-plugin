@@ -244,8 +244,10 @@ function Get-OutlookItem {
         [int]$Index = 0,
         [int]$Days = 7,
         [string]$Folder = "Inbox",
-        [string]$DateProperty = "ReceivedTime"
+        [string]$DateProperty = "ReceivedTime",
+        [string]$MessageID = ""
     )
+    if (-not $EntryID -and $MessageID) { return Find-OutlookItemByMessageId -Namespace $Namespace -MessageID $MessageID }
     if ($EntryID) {
         if ($StoreID) {
             try { return $Namespace.GetItemFromID($EntryID, $StoreID) } catch { }
@@ -266,7 +268,29 @@ function Get-OutlookItem {
         if ($Index -le $items.Count) { return $items.Item($Index) }
         throw "No item at -Index $Index in '$Folder' for the last $Days days ($($items.Count) items). Use -EntryID from outlook-find.ps1."
     }
-    throw "Provide -EntryID (preferred) or -Index to choose an email."
+    throw "Provide -EntryID (preferred), -MessageID or -Index to choose an email."
+}
+
+# The email with this Internet Message-ID, wherever it is now: every mail folder of each mailbox,
+# the default mailbox first; the first match wins. The Message-ID survives moves between folders,
+# while the EntryID (and the WebLink built from it) changes. Not found takes a few seconds.
+function Find-OutlookItemByMessageId {
+    param($Namespace, [string]$MessageID)
+    $id = "<$($MessageID.Trim().Trim('<', '>'))>"
+    $filter = "@SQL=""$($script:Prop.MessageID)"" = '$(ConvertTo-DaslText $id)'"
+    foreach ($store in (Get-SearchStores -Namespace $Namespace)) {
+        $folders = Get-MailSubfolders $store.GetRootFolder()
+        foreach ($f in $folders) {
+            try {
+                $t = $f.GetTable($filter)
+                $t.Columns.RemoveAll(); [void]$t.Columns.Add($script:Prop.LongTermEntryID)
+                if ($t.GetRowCount() -eq 0) { continue }
+                $rows = $t.GetArray(1)
+                return $Namespace.GetItemFromID((ConvertTo-HexId $rows[0, 0]), $store.StoreID)
+            } catch { }
+        }
+    }
+    throw "No email with Message-ID $id in any mail folder. It may have been deleted permanently."
 }
 
 # SMTP address of an address entry or the sender, resolving Exchange (EX) addresses.
@@ -325,6 +349,8 @@ function ConvertTo-MailRecord {
         EntryID        = $Item.EntryID
         StoreID        = ""
         ConversationID = ""
+        MessageID      = ""
+        WebLink        = ""
         Folder         = ""
         Subject        = $Item.Subject
         From           = ""
@@ -337,6 +363,8 @@ function ConvertTo-MailRecord {
     }
     try { $rec.StoreID = $Item.Parent.StoreID } catch { }
     try { $rec.ConversationID = $Item.ConversationID } catch { }
+    try { $rec.MessageID = [string]$Item.PropertyAccessor.GetProperty($script:Prop.MessageID) } catch { }
+    try { $rec.WebLink = Get-MailWebLink -Namespace $Item.Session -EntryID $rec.EntryID -StoreID $rec.StoreID } catch { }
     try { $rec.Folder = $Item.Parent.FolderPath } catch { }
     try {
         $name = $Item.SenderName; $smtp = Get-SenderSmtp $Item
@@ -377,6 +405,8 @@ function Write-MailRecord {
     Write-Host "  EntryID: $($Record.EntryID)"
     # StoreID is long and not needed (lookups search every mailbox); it stays in -Json output.
     if ($Record.ConversationID) { Write-Host "  ConversationID: $($Record.ConversationID)" -ForegroundColor DarkGray }
+    if ($Record.MessageID) { Write-Host "  Message-ID: $($Record.MessageID)" -ForegroundColor DarkGray }
+    if ($Record.WebLink) { Write-Host "  WebLink: $($Record.WebLink)" -ForegroundColor DarkGray }
     if ($Record.Folder) { Write-Host "  Folder: $($Record.Folder)" -ForegroundColor DarkGray }
     Write-Host "  Subject: $($Record.Subject)" -ForegroundColor Yellow
     if ($Record.From) { Write-Host "  From: $($Record.From)" }
@@ -452,6 +482,89 @@ function ConvertTo-JsonRecord {
 }
 
 # ---------------------------------------------------------------------------
+# Web links: the same email in Outlook on the web
+# ---------------------------------------------------------------------------
+
+# Outlook on the web and Graph's webLink name an item by one id: type 3 (mailbox item), the
+# mailbox GUID as text, then the item's EntryID, run-length compressed and base64 encoded.
+# Exchange accounts carry their mailbox GUID in the MAPI/HTTP address Outlook connects to
+# (Account.ExchangeMailboxServerName ends "?MailboxId=<guid>@<domain>"). Mail in any other
+# store (IMAP, POP, a PST, a shared mailbox that is not an account) gets no link.
+
+function Get-WebLinkCache {
+    if ($global:OutlookSuite) {
+        if (-not $global:OutlookSuite.WebLinkCache) { $global:OutlookSuite.WebLinkCache = @{} }
+        return $global:OutlookSuite.WebLinkCache
+    }
+    if (-not $script:WebLinkCacheLocal) { $script:WebLinkCacheLocal = @{} }
+    return $script:WebLinkCacheLocal
+}
+
+# Mailbox GUID and web host of a store, or $null. The accounts are read once per store.
+function Get-MailboxWebInfo {
+    param($Namespace, [string]$StoreID)
+    if (-not $StoreID) { return $null }
+    $cache = Get-WebLinkCache
+    if ($cache.ContainsKey($StoreID)) { return $cache[$StoreID] }
+    $info = $null
+    foreach ($a in $Namespace.Accounts) {
+        try {
+            if ($a.DeliveryStore.StoreID -ne $StoreID) { continue }
+            if ([string]$a.ExchangeMailboxServerName -match 'MailboxId=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})@') {
+                $guid = $Matches[1].ToLowerInvariant()
+                # Outlook.com mailboxes (GUID ending in 16 zeros) open on outlook.live.com.
+                $webHost = if ($guid.EndsWith("-0000-000000000000")) { "outlook.live.com" } else { "outlook.office365.com" }
+                $info = @{ Guid = $guid; Host = $webHost }
+            }
+        } catch { }
+        if ($info) { break }
+    }
+    $cache[$StoreID] = $info
+    return $info
+}
+
+# Outlook on the web item id for an EntryID in the mailbox with this GUID, in standard base64
+# (Graph's "id" field is the same value with - and _ in place of + and /).
+function ConvertTo-OwaItemId {
+    param([string]$EntryID, [string]$MailboxGuid)
+    $eid = New-Object byte[] ($EntryID.Length / 2)
+    for ($i = 0; $i -lt $eid.Length; $i++) { $eid[$i] = [Convert]::ToByte($EntryID.Substring($i * 2, 2), 16) }
+    $guid = [Text.Encoding]::ASCII.GetBytes($MailboxGuid)
+    $raw = New-Object System.Collections.Generic.List[byte]
+    $raw.Add(3)                                                          # mailbox item, GUID based
+    $raw.Add([byte]$guid.Length); $raw.Add(0); $raw.AddRange($guid)      # 16-bit length, GUID text
+    $raw.Add(0)                                                          # no special processing
+    $raw.Add([byte]($eid.Length -band 0xFF)); $raw.Add([byte]($eid.Length -shr 8)); $raw.AddRange($eid)
+    # Run-length step: a byte that repeats is written twice, then the number of further repeats.
+    $packed = New-Object System.Collections.Generic.List[byte]
+    $packed.Add(1)                                                       # 1 = compressed
+    $i = 0
+    while ($i -lt $raw.Count) {
+        $b = $raw[$i]; $packed.Add($b)
+        if ($i + 1 -lt $raw.Count -and $raw[$i + 1] -eq $b) {
+            $packed.Add($b); $j = $i + 2
+            while ($j -lt $raw.Count -and $raw[$j] -eq $b -and $j - $i -lt 257) { $j++ }
+            $packed.Add([byte]($j - $i - 2)); $i = $j
+        } else { $i++ }
+    }
+    if ($packed.Count -le $raw.Count) { return [Convert]::ToBase64String($packed.ToArray()) }
+    $plain = New-Object System.Collections.Generic.List[byte]
+    $plain.Add(0); $plain.AddRange($raw)                                 # 0 = stored as is
+    return [Convert]::ToBase64String($plain.ToArray())
+}
+
+# Link that opens the email in Outlook on the web (the same URL as Graph's webLink),
+# or "" when its mailbox has no web address.
+function Get-MailWebLink {
+    param($Namespace, [string]$EntryID, [string]$StoreID)
+    if ($EntryID -notmatch '^(?:[0-9A-Fa-f]{2})+$') { return "" }
+    $info = Get-MailboxWebInfo -Namespace $Namespace -StoreID $StoreID
+    if (-not $info) { return "" }
+    $id = ConvertTo-OwaItemId -EntryID $EntryID -MailboxGuid $info.Guid
+    return "https://$($info.Host)/owa/?ItemID=$([uri]::EscapeDataString($id))&exvsurl=1&viewmodel=ReadMessageItem"
+}
+
+# ---------------------------------------------------------------------------
 # Fast listing with Folder.GetTable
 # ---------------------------------------------------------------------------
 
@@ -463,6 +576,7 @@ $script:Prop = @{
     FlagStatus      = "http://schemas.microsoft.com/mapi/proptag/0x10900003"
     SenderSmtp      = "http://schemas.microsoft.com/mapi/proptag/0x5D01001F"
     Preview         = "urn:schemas:httpmail:textdescription"                   # first 255 chars of the body
+    MessageID       = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"   # Internet Message-ID header
 }
 
 function ConvertTo-DaslText([string]$s) { return $s.Replace("'", "''") }
@@ -809,11 +923,16 @@ function Format-MailLinks {
     return $result
 }
 
+# Characters that take no space: soft hyphen, combining grapheme joiner, zero-width space and
+# joiners, direction marks, word joiner, byte order mark.
+$script:InvisibleChars = '[{0}{1}{2}-{3}{4}-{5}{6}]' -f [char]0x00AD, [char]0x034F, [char]0x200B, [char]0x200F, [char]0x2060, [char]0x2064, [char]0xFEFF
+
 # Short single-line preview for list views (links as [URL-00N], no table).
 function Format-Preview {
     param([string]$Text, [int]$Length = 200)
     if (-not $Text) { return "" }
-    $t = ($Text -replace '\s+', ' ').Trim()
+    # Newsletters pad their preview with invisible characters; drop them before collapsing spaces.
+    $t = ($Text -replace $script:InvisibleChars, '' -replace '\s+', ' ').Trim()
     $t = (Format-MailLinks -Text $t -Mode domain).Text
     if ($t.Length -gt $Length) { $t = $t.Substring(0, $Length) + "..." }
     return $t

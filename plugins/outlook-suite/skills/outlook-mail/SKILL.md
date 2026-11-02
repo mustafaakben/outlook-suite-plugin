@@ -19,7 +19,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 
 | Need | Script | Key parameters |
 |---|---|---|
-| What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -Json` (see Triage) |
+| What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -ExcludeCategory "@C,@D" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -IncludeBody -BodyChars N -Copilot -Json` (see Triage) |
 | Mail ranked by Copilot priority | `outlook-priority.ps1` | `-Days 1 -DateFrom -DateTo -All -Unread -Read -Category -Untagged -Priority High,Normal,Low,None -From -Subject -Folder | -AllFolders -Limit [-Why] [-Summary] -Json` (see Copilot insights) |
 | Copilot's suggested replies | `outlook-smart-reply.ps1` | `-EntryID [-Use 1-3 [-ReplyAll] [-RemoveAutoSignature]]`; list: `-Days 2 -DateFrom -DateTo -UnreadOnly -From -Subject -Folder -Limit -MaxScan -Json` |
 | List / filter emails | `outlook-find.ps1` | `-Folder -Days -DateFrom -DateTo -From -To -Subject -BodyContains [-FastBody] -UnreadOnly -ReadOnly -HasAttachment -Flagged -Importance -Category -Priority High,Normal,Low -Limit -Detailed -Json` |
@@ -28,7 +28,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 | Search many folders / whole mailbox / all mailboxes | `outlook-search-advanced.ps1` | `-Folders "Inbox;Archive" -IncludeSubfolders -WholeMailbox -AllMailboxes` + find filters, `-SaveAs "name"` (Outlook Search Folder) |
 | Everything about a topic: mail, calendar, contacts, tasks, notes AND local files | `outlook-everything.ps1` | `"words" [-Kind Mail,Calendar,Contact,Task,Note,File] -Days -From -Path <folder> -Top 10 -NoResolve -Json` (see Everything search) |
 | What the user has selected in Outlook | `outlook-selection.ps1` | `-Body` |
-| One email in full | `outlook-read-body.ps1` | `-EntryID [-Links domain|full|none] [-Format html] -Json` |
+| One email in full | `outlook-read-body.ps1` | `-EntryID` or `-MessageID "<id>"` `[-Links domain|full|none] [-Format html] -Json` |
 | Whole thread, oldest first | `outlook-conversation.ps1` | `-EntryID [-TrimQuoted] [-Preview 300] [-HeadersOnly]` |
 | Full URLs behind `[URL-00N]` | `outlook-links.ps1` | `-EntryID [-Ref URL-003]` |
 | Internet headers, SPF/DKIM/DMARC, phishing signs | `outlook-headers.ps1` | `-EntryID [-Raw]` |
@@ -97,9 +97,11 @@ Text is cut at `-MaxChars` (default 8000, `0` for all) with the full length repo
 | `tagged` | Inbox, last 3 days, read and unread, any category, grouped by tag set | where everything stands |
 | `reply` | Inbox, last 7 days, not replied (any tag or none), oldest first, "waiting Nd" | what the user has not answered |
 
-Every filter works with every view and overrides its default: `-Days N` (`-Days 0` = no date limit), `-DateFrom/-DateTo`, `-All` (no date limit and read + unread; an explicit `-Days` still wins), `-Unread`/`-Read`, `-Category "@Action,@Review"` (any of them) or `-Untagged`, `-NotReplied`/`-Replied`, `-Priority High,Normal,Low`, `-From`, `-Subject`, `-Folder`, `-Sort Newest|Oldest|Priority`, `-Limit`, `-Json`.
+Every filter works with every view and overrides its default: `-Days N` (`-Days 0` = no date limit), `-DateFrom/-DateTo`, `-All` (no date limit and read + unread; an explicit `-Days` still wins), `-Unread`/`-Read`, `-Category "@Action,@Review"` (any of them) or `-Untagged`, `-ExcludeCategory "@Done,@NoAction"` (drops mail that has any of them; tags are matched exactly; the `untagged` view has no tagged mail to drop), `-NotReplied`/`-Replied`, `-Priority High,Normal,Low`, `-From`, `-Subject`, `-Folder`, `-Sort Newest|Oldest|Priority`, `-Limit`, `-Json`.
 
-Each row: date, exact subject, sender, tags, unread, replied / replied all / forwarded, Copilot priority, whether the user is in To or only CC and the recipient count, flag and due date, preview, EntryID. The last line counts matches, unread, untagged, not replied, Copilot high and flagged.
+Each row: date, exact subject, sender, tags, unread, replied / replied all / forwarded, Copilot priority, whether the user is in To or only CC and the recipient count, flag and due date, preview, EntryID, Message-ID and WebLink. The last line counts matches, unread, untagged, not replied, Copilot high and flagged.
+
+`-IncludeBody` adds each shown email's text (`Body`, plus `BodyTruncated` in JSON), so a batch is read in one call. Links appear as `[URL-001]` with the same numbers `outlook-read-body.ps1` and `outlook-links.ps1` use; invisible padding and runs of blank lines are removed; each body is cut at `-BodyChars` (default 4000, `0` = no cap) with a note giving the full length. One item read per email shown, so pair it with a sensible `-Limit`.
 
 - **Replied** is Outlook's own record of the last action on the email (reply, reply all, forward). Forwarded is not replied.
 - **Copilot priority** is the High / Low arrow Copilot shows in Outlook ("Marked as high priority by Copilot"), read from the message property `CopilotInboxScore` (5 high, 3 normal, 1 low). It is empty on mail Copilot did not score.
@@ -111,6 +113,11 @@ Each row: date, exact subject, sender, tags, unread, replied / replied all / for
 ```
 
 Each row also shows Copilot's one-line headline when it wrote one. `-Copilot` adds Copilot's reason and suggested replies for the rows shown (one extra read per email).
+
+### Web links and Message-IDs
+
+- **WebLink** opens the email in Outlook on the web. It is the same URL Microsoft Graph returns as `webLink`, built locally from the EntryID and the mailbox GUID in the account's MAPI/HTTP address, so no Graph call is needed. Exchange and Microsoft 365 mailboxes get `outlook.office365.com` links, Outlook.com mailboxes get `outlook.live.com` links, and IMAP/POP/PST mail gets none. Triage rows, `outlook-read-body.ps1` and every single-item record (`-Json` action results too) carry it.
+- **Moving an email changes its EntryID, so an old WebLink stops working** (Graph's links behave the same way). The **Message-ID** does not change. Store the Message-ID next to any saved link; `outlook-read-body.ps1 -MessageID "<id>"` finds the email in any mail folder of any mailbox and returns its current EntryID and WebLink (a miss takes a few seconds).
 
 ## Copilot insights
 

@@ -1,5 +1,6 @@
 param(
     [string]$EntryID = "",
+    [string]$MessageID = "",   # find the email by its Message-ID wherever it is now (survives moves; used when no -EntryID)
     [string]$StoreID = "",
     [int]$Index = 0,
     [int]$Days = 7,
@@ -11,9 +12,13 @@ param(
     [bool]$StripLinks = $true   # legacy: -StripLinks:$false is the same as -Links full
 )
 
-# Outlook Email Body Reader: one email in full (headers, recipients, body, attachments, links).
+# Outlook Email Body Reader: one email in full (headers, recipients, body, attachments, links),
+# with its Message-ID and WebLink (opens it in Outlook on the web).
 # Links appear as [URL-001] with a reference table; full URLs: -Links full or outlook-links.ps1.
+# Moving an email changes its EntryID and WebLink but not its Message-ID: -MessageID finds it
+# again in any folder and returns the current EntryID and WebLink.
 # Usage: .\outlook-read-body.ps1 -EntryID "00000000..."
+# Usage: .\outlook-read-body.ps1 -MessageID "<abc123@example.com>"
 # Usage: .\outlook-read-body.ps1 -EntryID "00000000..." -Links full
 # Usage: .\outlook-read-body.ps1 -EntryID "00000000..." -Format html      (raw HTML body)
 
@@ -33,7 +38,7 @@ function Write-CopilotBlock($ci) {
 
 try {
     $null = Connect-Outlook
-    $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID -Index $Index -Days $Days
+    $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -MessageID $MessageID -StoreID $StoreID -Index $Index -Days $Days
 
     if ($Format -eq "html") {
         $rec = ConvertTo-MailRecord $email -WithRecipients
