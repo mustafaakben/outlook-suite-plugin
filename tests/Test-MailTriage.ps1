@@ -27,6 +27,7 @@ $inbox = $app.Session.GetDefaultFolder(6)
 $verbTag = "http://schemas.microsoft.com/mapi/proptag/0x10810003"
 $scoreTag = "http://schemas.microsoft.com/mapi/string/{00062008-0000-0000-C000-000000000046}/CopilotInboxScore"
 $midTag = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
+$snapshot = Get-Date   # mail received after this is a new arrival, not a triage error
 $truth = foreach ($it in $inbox.Items.Restrict("[ReceivedTime] >= '$($d7.ToString('MM/dd/yyyy HH:mm'))'")) {
     $verb = 0; try { $verb = [int]$it.PropertyAccessor.GetProperty($verbTag) } catch { }
     $score = 0; try { $score = [int]$it.PropertyAccessor.GetProperty($scoreTag) } catch { }
@@ -65,10 +66,39 @@ $in3 = @($truth | Where-Object { $_.Received -ge $d3 })
 $from3 = $d3.ToString("yyyy-MM-dd"); $from7 = $d7.ToString("yyyy-MM-dd")
 Write-Host "Independent count: $(@($truth).Count) items since $from7, $($in3.Count) since $from3" -ForegroundColor Gray
 
+# Every email since $from7 as Outlook's table (what triage reads) sees it.
+$allJ = TriageJson @("all", "-DateFrom", $from7, "-Limit", "5000")
+$tableById = @{}; foreach ($it in $allJ.items) { $tableById[$it.EntryID] = $it }
+$byEid = @{}; foreach ($t in $truth) { $byEid[$t.EntryID] = $t }
+
+# Set check that tells Outlook's cache lag from a real error. After mail is read elsewhere, Outlook's table and an
+# item opened directly can disagree on read state for a while (checked against Graph on 2026-11-02: the table was
+# right), and mail can arrive while the test runs. If every differing email is one of those, it is a warning.
+function CheckSet([string]$name, $wantRows, $j) {
+    $want = @($wantRows | ForEach-Object { $_.EntryID }); $got = @($j.items | ForEach-Object { $_.EntryID })
+    $w = @{}; foreach ($x in $want) { $w[$x] = 1 }; $g = @{}; foreach ($x in $got) { $g[$x] = 1 }
+    $diff = @(@($want | Where-Object { -not $g.ContainsKey($_) }) + @($got | Where-Object { -not $w.ContainsKey($_) }))
+    if ($diff.Count -eq 0 -and $j.summary.matched -eq $want.Count) { Check $name $true "($($want.Count)/$($want.Count))"; return }
+    $explained = @($diff | Where-Object {
+            ($tableById.ContainsKey($_) -and $byEid.ContainsKey($_) -and [bool]$tableById[$_].Unread -ne [bool]$byEid[$_].Unread) -or
+            ($tableById.ContainsKey($_) -and -not $byEid.ContainsKey($_) -and [datetime]$tableById[$_].Date -ge $snapshot) })
+    if ($explained.Count -eq $diff.Count) {
+        Write-Host "WARN  $name ($($j.summary.matched)/$($want.Count)): $($diff.Count) email(s) changed read state or arrived during the test (Outlook cache lag, not a triage error)" -ForegroundColor Yellow
+    } else { Check $name $false "($($j.summary.matched)/$($want.Count), $($diff.Count - $explained.Count) difference(s) not explained by cache lag)" }
+}
+
+Check "all = every email since $from7" (@($allJ.items).Count -eq $allJ.summary.matched -and $allJ.summary.matched -ge @($truth).Count) "($($allJ.summary.matched)/$(@($truth).Count))"
+CheckSet "all: same emails as the item-by-item read" $truth $allJ
+
 # Views against the independent counts
-$want = @($in3 | Where-Object { $_.Unread -and $_.Tags.Count -eq 0 }).Count
-$j = TriageJson @("untagged", "-DateFrom", $from3)
-Check "untagged = unread with no tag since $from3" ($j.summary.matched -eq $want) "($($j.summary.matched)/$want)"
+$j = TriageJson @("untagged", "-DateFrom", $from3, "-Limit", "1000")
+CheckSet "untagged = unread with no tag since $from3" @($in3 | Where-Object { $_.Unread -and $_.Tags.Count -eq 0 }) $j
+
+$topTag = @($truth | ForEach-Object { $_.Tags } | Group-Object | Sort-Object Count -Descending | Select-Object -First 1 | ForEach-Object { $_.Name })
+if ($topTag) {
+    $j = TriageJson @("all", "-DateFrom", $from3, "-Unread", "-ExcludeCategory", $topTag[0], "-Limit", "1000")
+    CheckSet "all -Unread -ExcludeCategory (tagged and untagged mail in one call)" @($in3 | Where-Object { $_.Unread -and $_.Tags -notcontains $topTag[0] }) $j
+}
 
 $want = @($in3 | Where-Object { $_.Tags.Count -gt 0 }).Count
 $j = TriageJson @("tagged", "-DateFrom", $from3)
@@ -156,7 +186,7 @@ if ($first) {
 }
 
 # Same EntryIDs through the warm host and under Windows PowerShell 5.1
-foreach ($v in @(@("untagged", "-DateFrom", $from7, "-All"), @("tagged", "-DateFrom", $from3), @("reply", "-DateFrom", $from3))) {
+foreach ($v in @(@("untagged", "-DateFrom", $from7, "-All"), @("tagged", "-DateFrom", $from3), @("reply", "-DateFrom", $from3), @("all", "-DateFrom", $from3))) {
     $key = { param($items) (@($items | ForEach-Object { "$($_.EntryID)|$($_.MessageID)|$($_.WebLink)" }) -join ",") }
     $a = & $key (TriageJson $v).items
     $h = & $key (& pwsh -NoProfile -File (Join-Path $ScriptsDir "outlook-call.ps1") triage @v -Json 2>&1 | Out-String | ConvertFrom-Json).items

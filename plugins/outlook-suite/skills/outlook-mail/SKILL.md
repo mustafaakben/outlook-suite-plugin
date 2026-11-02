@@ -19,7 +19,7 @@ description: "Manage classic Outlook email on Windows through PowerShell COM: tr
 
 | Need | Script | Key parameters |
 |---|---|---|
-| What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -ExcludeCategory "@C,@D" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -IncludeBody -BodyChars N -Copilot -Json` (see Triage) |
+| What needs attention: untagged, by tag, not replied, Copilot priority | `outlook-triage.ps1` | `untagged|tagged|reply|all -Days -DateFrom -DateTo -All -Unread -Read -Category "@A,@B" -ExcludeCategory "@C,@D" -Untagged -NotReplied -Replied -Priority High,Normal,Low -From -Subject -Folder -Sort Newest|Oldest|Priority -Limit -IncludeBody -BodyChars N -Copilot -Json` (see Triage) |
 | Mail ranked by Copilot priority | `outlook-priority.ps1` | `-Days 1 -DateFrom -DateTo -All -Unread -Read -Category -Untagged -Priority High,Normal,Low,None -From -Subject -Folder | -AllFolders -Limit [-Why] [-Summary] -Json` (see Copilot insights) |
 | Copilot's suggested replies | `outlook-smart-reply.ps1` | `-EntryID [-Use 1-3 [-ReplyAll] [-RemoveAutoSignature]]`; list: `-Days 2 -DateFrom -DateTo -UnreadOnly -From -Subject -Folder -Limit -MaxScan -Json` |
 | List / filter emails | `outlook-find.ps1` | `-Folder -Days -DateFrom -DateTo -From -To -Subject -BodyContains [-FastBody] -UnreadOnly -ReadOnly -HasAttachment -Flagged -Importance -Category -Priority High,Normal,Low -Limit -Detailed -Json` |
@@ -96,6 +96,9 @@ Text is cut at `-MaxChars` (default 8000, `0` for all) with the full length repo
 | `untagged` (default) | Inbox, last 3 days, unread, no category | what nobody has sorted yet |
 | `tagged` | Inbox, last 3 days, read and unread, any category, grouped by tag set | where everything stands |
 | `reply` | Inbox, last 7 days, not replied (any tag or none), oldest first, "waiting Nd" | what the user has not answered |
+| `all` | Inbox, last 3 days, no other filter: read or unread, tagged or not, replied or not | everything, narrowed by the filters you add (e.g. `-ExcludeCategory "@Done"` for mail not handled yet, whatever other tags it has) |
+
+**Processing each email exactly once** (an inbox scan that creates tasks): do not use unread as "not processed yet". Opening an email anywhere (phone, Outlook on the web) marks it read, and Outlook's read state can briefly lag between devices, so an unread filter silently skips mail. Tag every email the scan handles and ask for `all -ExcludeCategory "<handled tags>" -Days <N>`, with N covering the time since the last run.
 
 Every filter works with every view and overrides its default: `-Days N` (`-Days 0` = no date limit), `-DateFrom/-DateTo`, `-All` (no date limit and read + unread; an explicit `-Days` still wins), `-Unread`/`-Read`, `-Category "@Action,@Review"` (any of them) or `-Untagged`, `-ExcludeCategory "@Done,@NoAction"` (drops mail that has any of them; tags are matched exactly; the `untagged` view has no tagged mail to drop), `-NotReplied`/`-Replied`, `-Priority High,Normal,Low`, `-From`, `-Subject`, `-Folder`, `-Sort Newest|Oldest|Priority`, `-Limit`, `-Json`.
 
