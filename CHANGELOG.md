@@ -2,6 +2,17 @@
 
 All notable changes to the Outlook Suite plugin. Versions follow [Semantic Versioning](https://semver.org/). The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.2.2] - 2026-11-02
+
+### Added
+- Mail: list and search results carry `MessageID` and `WebLink` too, in text and `-Json`: `outlook-read.ps1`, `outlook-find.ps1`, `outlook-search.ps1`, `outlook-search-advanced.ps1`, `outlook-priority.ps1` and the Mail rows of `outlook-everything.ps1`. The Message-ID is one more table column (re-read from the item when it reaches the 255-character column limit); the link is built only for the rows shown.
+- Mail: saved drafts return their `WebLink` (`outlook-draft.ps1`, `outlook-draft-update.ps1`, reply and forward drafts), so a draft can be opened in Outlook on the web right away. Move and copy results print the new `WebLink` and `MessageID` in text output too (`-Json` already had them).
+- Tasks: `outlook-tasks-from-mail.ps1` returns the email's `Message-ID` and `WebLink` and writes the web link into the task body; task records print the source email's Message-ID.
+- Tests: `Test-ListLinks.ps1` checks every list tool's Message-IDs and WebLinks against triage, and the draft, move, copy, forward and task-from-mail results, under PowerShell 7 and Windows PowerShell 5.1.
+
+### Fixed
+- Mail: `outlook-copy.ps1` failed with "Cannot move the items" when the target was the email's own folder (the copy already lands there; Outlook refuses the extra move).
+
 ## [3.2.1] - 2026-11-02
 
 ### Added

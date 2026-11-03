@@ -119,7 +119,7 @@ Each row also shows Copilot's one-line headline when it wrote one. `-Copilot` ad
 
 ### Web links and Message-IDs
 
-- **WebLink** opens the email in Outlook on the web. It is the same URL Microsoft Graph returns as `webLink`, built locally from the EntryID and the mailbox GUID in the account's MAPI/HTTP address, so no Graph call is needed. Exchange and Microsoft 365 mailboxes get `outlook.office365.com` links, Outlook.com mailboxes get `outlook.live.com` links, and IMAP/POP/PST mail gets none. Triage rows, `outlook-read-body.ps1` and every single-item record (`-Json` action results too) carry it.
+- **WebLink** opens the email in Outlook on the web. It is the same URL Microsoft Graph returns as `webLink`, built locally from the EntryID and the mailbox GUID in the account's MAPI/HTTP address, so no Graph call is needed. Exchange and Microsoft 365 mailboxes get `outlook.office365.com` links, Outlook.com mailboxes get `outlook.live.com` links, and IMAP/POP/PST mail gets none. Triage rows, list and search results (`outlook-read`, `outlook-find`, `outlook-search`, `outlook-search-advanced`, `outlook-priority`, Mail rows of `outlook-everything`), `outlook-read-body.ps1`, saved drafts, move and copy results and every single-item record carry it.
 - **Moving an email changes its EntryID, so an old WebLink stops working** (Graph's links behave the same way). The **Message-ID** does not change. Store the Message-ID next to any saved link; `outlook-read-body.ps1 -MessageID "<id>"` finds the email in any mail folder of any mailbox and returns its current EntryID and WebLink (a miss takes a few seconds).
 
 ## Copilot insights

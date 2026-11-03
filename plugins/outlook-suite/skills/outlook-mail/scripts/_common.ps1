@@ -447,6 +447,8 @@ function Write-ActionResult {
     }
     Write-Host "=== $Title ===" -ForegroundColor Green
     Write-Host "  EntryID: $($rec.EntryID)"
+    if ($rec.MessageID) { Write-Host "  Message-ID: $($rec.MessageID)" -ForegroundColor DarkGray }
+    if ($rec.WebLink) { Write-Host "  WebLink: $($rec.WebLink)" -ForegroundColor DarkGray }
     Write-Host "  Subject: $($rec.Subject)" -ForegroundColor Yellow
     if ($rec.From) { Write-Host "  From: $($rec.From)" }
     if ($rec.Date) { Write-Host "  Date: $(Format-MailDate $rec.Date)" }
@@ -564,6 +566,19 @@ function Get-MailWebLink {
     return "https://$($info.Host)/owa/?ItemID=$([uri]::EscapeDataString($id))&exvsurl=1&viewmodel=ReadMessageItem"
 }
 
+# Fills MessageID and WebLink on list records (call it for the rows shown only). Records need
+# EntryID and StoreID. A table column stops at 255 characters, so a Message-ID that long is
+# re-read from the item.
+function Add-MailListLinks {
+    param($Namespace, $Records)
+    foreach ($r in $Records) {
+        if (([string]$r.MessageID).Length -ge 255) {
+            try { $r.MessageID = [string]$Namespace.GetItemFromID($r.EntryID, $r.StoreID).PropertyAccessor.GetProperty($script:Prop.MessageID) } catch { }
+        }
+        try { $r.WebLink = Get-MailWebLink -Namespace $Namespace -EntryID $r.EntryID -StoreID $r.StoreID } catch { }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Fast listing with Folder.GetTable
 # ---------------------------------------------------------------------------
@@ -620,7 +635,7 @@ function Get-MailTableRecords {
     $table.Columns.RemoveAll()
     $cols = @("EntryID", "Subject", "SenderName", $script:Prop.SenderSmtp, "To", "ReceivedTime",
         $script:Prop.MessageFlags, $script:Prop.HasAttach, "Importance", "Categories", $script:Prop.FlagStatus,
-        $script:Prop.Preview, $script:Prop.LongTermEntryID, $script:Prop.ConversationID)
+        $script:Prop.Preview, $script:Prop.LongTermEntryID, $script:Prop.ConversationID, $script:Prop.MessageID)
     foreach ($c in $cols) { [void]$table.Columns.Add($c) }
     $table.Sort($SortBy, $true)
     $total = $table.GetRowCount()
@@ -639,6 +654,8 @@ function Get-MailTableRecords {
             EntryID        = $eid
             StoreID        = $store
             ConversationID = $conv
+            MessageID      = [string]$rows[$i, 14]
+            WebLink        = ""                      # filled for the rows shown (Add-MailListLinks)
             Folder         = $path
             Subject        = [string]$rows[$i, 1]
             From           = $(if ($smtp -and $smtp -ne $name) { "$name <$smtp>" } else { $name })
@@ -742,12 +759,15 @@ function Write-MailList {
     Write-Host "Folder: $($Folder.FolderPath)"
     if ($Criteria.Count -gt 0) { Write-Host "Filters: $($Criteria -join ' | ')" -ForegroundColor Gray }
     Write-Host ""
+    Add-MailListLinks -Namespace $Folder.Session -Records $Result.Records
     $n = 0
     foreach ($r in $Result.Records) {
         $n++
         Write-Host "--- #$n ---" -ForegroundColor Cyan
         Write-Host "  EntryID: $($r.EntryID)"
         if ($r.ConversationID) { Write-Host "  ConversationID: $($r.ConversationID)" -ForegroundColor DarkGray }
+        if ($r.MessageID) { Write-Host "  Message-ID: $($r.MessageID)" -ForegroundColor DarkGray }
+        if ($r.WebLink) { Write-Host "  WebLink: $($r.WebLink)" -ForegroundColor DarkGray }
         Write-Host "  Subject: $($r.Subject)" -ForegroundColor Yellow
         Write-Host "  From: $($r.From)"
         if ($r.Contains("To") -and $r.To) { Write-Host "  To: $($r.To -join '; ')" } elseif ($r.ToLine) { Write-Host "  To: $($r.ToLine)" }
@@ -775,6 +795,7 @@ function Write-MailList {
 # JSON rendering of list results.
 function Write-MailListJson {
     param($Result, $Folder, [hashtable]$Query = @{})
+    Add-MailListLinks -Namespace $Folder.Session -Records $Result.Records
     $records = @(foreach ($r in $Result.Records) {
         $o = ConvertTo-JsonRecord $r
         $o.Remove("Folder"); $o.Remove("StoreID")
@@ -1191,11 +1212,17 @@ function Write-ComposeSummary {
         Format = @{ 1 = "text"; 2 = "html"; 3 = "rtf" }[[int]$Mail.BodyFormat]
         Attachments = $att; Preview = $preview
     }
+    # A saved draft opens on the web too. A sent message has no EntryID here (it is in Sent Items).
+    if ($o.EntryID) {
+        $o.WebLink = ""
+        try { $o.WebLink = Get-MailWebLink -Namespace $Mail.Session -EntryID $o.EntryID -StoreID $Mail.Parent.StoreID } catch { }
+    }
     if ($Mail.DeferredDeliveryTime -and ([datetime]$Mail.DeferredDeliveryTime).Year -lt 4500) { $o.SendAt = Format-MailDateIso $Mail.DeferredDeliveryTime }
     if ($Original) { $o.InReplyTo = $Original }
     if ($Json) { Write-Json $o; return }
     Write-Host "=== $Title ===" -ForegroundColor Green
     if ($o.EntryID) { Write-Host "  EntryID: $($o.EntryID)" }
+    if ($o.WebLink) { Write-Host "  WebLink: $($o.WebLink)" -ForegroundColor DarkGray }
     if ($Original) { Write-Host "  Original: $Original" -ForegroundColor DarkGray }
     Write-Host "  Subject: $($o.Subject)" -ForegroundColor Yellow
     if ($o.From) { Write-Host "  From account: $($o.From)" }

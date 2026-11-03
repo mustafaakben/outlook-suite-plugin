@@ -136,6 +136,11 @@ try {
                     $item = Resolve-IndexedItem $url
                     if ($item) {
                         $r.EntryID = $item.EntryID
+                        if ($k -eq "Mail") {
+                            $r.MessageID = ""; $r.WebLink = ""
+                            try { $r.MessageID = [string]$item.PropertyAccessor.GetProperty($script:Prop.MessageID) } catch { }
+                            try { $r.WebLink = Get-MailWebLink -Namespace $item.Session -EntryID $item.EntryID -StoreID $item.Parent.StoreID } catch { }
+                        }
                         # The item is authoritative for the date when the index has none.
                         if ($k -eq "Calendar" -and -not $r.Start) { try { $r.Start = $item.Start } catch { } }
                     }
@@ -191,6 +196,8 @@ try {
             }
             if ($k -ne "File") {
                 if ($r.EntryID) { Write-Host "      EntryID: $($r.EntryID)" -ForegroundColor DarkGray }
+                if ($r.Contains("MessageID") -and $r.MessageID) { Write-Host "      Message-ID: $($r.MessageID)" -ForegroundColor DarkGray }
+                if ($r.Contains("WebLink") -and $r.WebLink) { Write-Host "      WebLink: $($r.WebLink)" -ForegroundColor DarkGray }
                 elseif (-not $NoResolve) { Write-Host "      (not opened: the item may have moved since it was indexed)" -ForegroundColor DarkGray }
             }
         }

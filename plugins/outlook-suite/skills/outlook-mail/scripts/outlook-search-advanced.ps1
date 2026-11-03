@@ -77,6 +77,7 @@ try {
         } catch { $skipped++ }
     }
     $sorted = @($all | Sort-Object { [datetime]$_.Date } -Descending | Select-Object -First $Limit)
+    Add-MailListLinks -Namespace $Namespace -Records $sorted
     $result = [pscustomobject]@{ Total = $total; Records = $sorted }
 
     $saved = ""
@@ -116,6 +117,8 @@ try {
         Write-Host "  EntryID: $($r.EntryID)"
         Write-Host "  Folder: $($r.Folder)" -ForegroundColor DarkGray
         if ($r.ConversationID) { Write-Host "  ConversationID: $($r.ConversationID)" -ForegroundColor DarkGray }
+        if ($r.MessageID) { Write-Host "  Message-ID: $($r.MessageID)" -ForegroundColor DarkGray }
+        if ($r.WebLink) { Write-Host "  WebLink: $($r.WebLink)" -ForegroundColor DarkGray }
         Write-Host "  Subject: $($r.Subject)" -ForegroundColor Yellow
         Write-Host "  From: $($r.From)"
         if ($r.ToLine) { Write-Host "  To: $($r.ToLine)" }

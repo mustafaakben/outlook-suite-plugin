@@ -273,6 +273,7 @@ function Write-TaskRecord($Record, [string]$Heading = "") {
     if ($Record.Completed) { Write-Host "  Completed: $($Record.Completed.ToString('ddd, MMM d, yyyy'))" -ForegroundColor Green }
     if ($Record.Categories) { Write-Host "  Categories: $($Record.Categories)" -ForegroundColor Green }
     if ($Record.SourceEntryID) { Write-Host "  From email: $($Record.SourceEntryID)" -ForegroundColor DarkGray }
+    if ($Record.SourceMessageID) { Write-Host "  From email Message-ID: $($Record.SourceMessageID)" -ForegroundColor DarkGray }
 }
 
 # Result of an action on one task: title, the task, what changed. -Json prints one object.
