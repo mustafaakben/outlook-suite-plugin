@@ -33,6 +33,7 @@ try {
     if ([int]$mail.Class -ne 43) { Stop-WithError "That EntryID is not an email (item class $([int]$mail.Class))." -Hint "Get email EntryIDs from outlook-find.ps1." }
     $mailId = [string]$mail.EntryID
     $messageId = ""; try { $messageId = [string]$mail.PropertyAccessor.GetProperty($script:TaskProp.InternetMessageID) } catch { }
+    $webLink = ""; try { $webLink = Get-MailWebLink -Namespace $Namespace -EntryID $mailId -StoreID $mail.Parent.StoreID } catch { }
 
     if (-not $Force) {
         # Match the Message-ID too: moving the email changes its EntryID.
@@ -65,7 +66,10 @@ try {
         "From email: $sender",
         "Received: $(Format-MailDate $received)",
         "Subject: $($mail.Subject)",
-        "Open the email: outlook:$mailId",
+        "Open the email: outlook:$mailId"
+    )
+    if ($webLink) { $lines += "Open it on the web: $webLink" }
+    $lines += @(
         "",
         (Format-Preview ([string]$mail.Body) 500)
     )
@@ -83,6 +87,8 @@ try {
     $task.Save()
 
     $changes = [ordered]@{ "From email" = $sender; Received = Format-MailDate $received }
+    if ($messageId) { $changes["Email Message-ID"] = $messageId }
+    if ($webLink) { $changes["Email WebLink"] = $webLink }
     if ($AttachEmail) { $changes["Email attached"] = $true }
     Write-TaskResult -Title "TASK CREATED FROM EMAIL" -Task $task -Changes $changes -Json:$Json -Action "from-mail"
 }

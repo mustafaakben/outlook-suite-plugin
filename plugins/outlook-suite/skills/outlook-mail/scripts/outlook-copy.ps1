@@ -16,8 +16,9 @@ try {
     $null = Connect-Outlook
     $email = Get-OutlookItem -Namespace $Namespace -EntryID $EntryID -StoreID $StoreID
     $target = Resolve-OutlookFolder -Namespace $Namespace -Path $Folder
-    $copy = $email.Copy()
-    $moved = $copy.Move($target)
+    $copy = $email.Copy()   # lands in the email's own folder
+    # Outlook cannot move an item into the folder it is already in: a copy into the same folder is done.
+    $moved = if ($email.Parent.EntryID -eq $target.EntryID) { $copy } else { $copy.Move($target) }
     Write-ActionResult -Title "EMAIL COPIED" -Item $moved -Changes ([ordered]@{ Original = $email.EntryID; From = $email.Parent.FolderPath }) -Json:$Json -Action "copy"
 }
 catch {

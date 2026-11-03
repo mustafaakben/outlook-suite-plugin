@@ -82,7 +82,7 @@ try {
     }
     $cols =@($script:Prop.LongTermEntryID, "Subject", "SenderName", $script:Prop.SenderSmtp, "ReceivedTime",
         $script:Prop.MessageFlags, "Categories", $LastVerb, $script:CopilotProp.Score, $script:CopilotProp.Headline,
-        $script:Prop.ConversationID)
+        $script:Prop.ConversationID, $script:Prop.MessageID)
 
     $list = New-Object System.Collections.Generic.List[object]
     foreach ($target in $folders) {
@@ -105,6 +105,9 @@ try {
             $rec = [ordered]@{
                 EntryID         = $(if ($eid -is [byte[]]) { ConvertTo-HexId $eid } else { "" })
                 ConversationID  = $(if ($conv -is [byte[]]) { ConvertTo-HexId $conv } else { "" })
+                MessageID       = [string]$rows[$i, 11]
+                WebLink         = ""          # filled for the rows shown
+                StoreID         = $target.StoreID
                 CopilotPriority = $prio
                 Date            = [datetime]$rows[$i, 4]
                 From            = $(if ($smtp -and $smtp -ne $name) { "$name <$smtp>" } else { $name })
@@ -131,6 +134,7 @@ try {
         None   = @($records | Where-Object { -not $_.CopilotPriority }).Count
     }
     $shown = if ($Summary) { @() } else { @($records | Select-Object -First $Limit) }
+    Add-MailListLinks -Namespace $Namespace -Records $shown
     if ($Why) {
         foreach ($r in $shown) {
             try { $r.CopilotReason = (Get-CopilotInsight ($Namespace.GetItemFromID($r.EntryID))).Reason } catch { }
@@ -147,7 +151,7 @@ try {
     if ($Subject) { $filters += "subject: '$Subject'" }
 
     if ($Json) {
-        $items = @(foreach ($r in $shown) { ConvertTo-JsonRecord $r })
+        $items = @(foreach ($r in $shown) { $o = ConvertTo-JsonRecord $r; $o.Remove("StoreID"); $o })
         Write-Json ([ordered]@{ folder = $folderLabel; filters = $filters; matched = $records.Count; counts = $counts; items = $items })
         exit 0
     }
@@ -174,6 +178,8 @@ try {
         if ($r.CopilotReason) { Write-Host "  Why: $($r.CopilotReason)" -ForegroundColor Magenta }
         if ($r.Categories.Count) { Write-Host "  Tags: $($r.Categories -join ', ')" -ForegroundColor Green }
         Write-Host "  EntryID: $($r.EntryID)" -ForegroundColor DarkGray
+        if ($r.MessageID) { Write-Host "  Message-ID: $($r.MessageID)" -ForegroundColor DarkGray }
+        if ($r.WebLink) { Write-Host "  WebLink: $($r.WebLink)" -ForegroundColor DarkGray }
         Write-Host ""
     }
     if ($records.Count -eq 0) { Write-Host "Nothing matches. Try a larger -Days, -All, or fewer filters." -ForegroundColor Gray }
